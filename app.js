@@ -515,6 +515,12 @@ function renderPriceList() {
     const { servicesCatalog } = appState.data;
     const content = document.getElementById('content');
 
+    // Нормализуем данные
+    const safeCatalog = servicesCatalog.map(s => ({
+        service_name: String(s.service_name || 'Без названия'),
+        base_price: Number(s.base_price) || 0
+    }));
+
     content.innerHTML = `
         <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
             <div class="grid grid-cols-4 text-center text-sm">
@@ -528,7 +534,7 @@ function renderPriceList() {
         <div class="bg-white rounded-lg shadow p-4">
             <h2 class="text-xl font-semibold mb-4">Прайс-лист</h2>
             <div class="space-y-2">
-                ${servicesCatalog.map(s => `
+                ${safeCatalog.map(s => `
                     <div class="flex justify-between items-center border-b py-3">
                         <span class="font-medium">${s.service_name}</span>
                         <span class="text-lg font-semibold">${formatMoney(s.base_price)}</span>
@@ -545,6 +551,13 @@ function renderPriceList() {
 function renderCatalog() {
     const { servicesCatalog, settings } = appState.data;
     const content = document.getElementById('content');
+
+    // Проверяем и нормализуем данные
+    const safeCatalog = servicesCatalog.map(s => ({
+        service_id: String(s.service_id || ''),
+        service_name: String(s.service_name || 'Без названия'),
+        base_price: Number(s.base_price) || 0
+    }));
 
     content.innerHTML = `
         <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
@@ -574,7 +587,7 @@ function renderCatalog() {
             <div class="bg-white rounded-lg shadow p-4">
                 <h2 class="text-xl font-semibold mb-4">Управление услугами</h2>
                 <div class="space-y-2">
-                    ${servicesCatalog.map(s => `
+                    ${safeCatalog.map(s => `
                         <div class="flex justify-between items-center border-b py-3">
                             <div class="flex-grow">
                                 <p class="font-medium">${s.service_name}</p>
@@ -596,7 +609,6 @@ function renderCatalog() {
         </div>
     `;
 }
-
 function showCatalogEditModal(serviceId = null, serviceName = '', basePrice = 0) {
     const modal = document.getElementById('modal');
     const modalContent = document.getElementById('modal-content');
