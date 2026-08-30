@@ -1107,36 +1107,43 @@ function renderHistory() {
     const content = document.getElementById('content');
 
     content.innerHTML = `
-    <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
-        <div class="grid grid-cols-4 text-center text-sm">
-            <button onclick="showScreen('dashboard')" class="py-3 text-gray-600 hover:text-blue-600">📊</button>
-            <button onclick="showScreen('history')"
-                class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">📅</button>
-            <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">💰</button>
-            <button onclick="showScreen('catalog')" class="py-3 text-gray-600 hover:text-blue-600">⚙️</button>
-        </div>
-    </div>
-
-    <div class="bg-white rounded-lg shadow p-4">
-        <h2 class="text-xl font-semibold mb-4">Периоды</h2>
-        <div class="space-y-3">
-            ${periods.map(p => `
-            <div class="border rounded-lg p-4 cursor-pointer hover:bg-gray-50"
-                onclick="showScreen('periodDetail', { periodId: '${p.period_id}' })">
-                <div class="flex justify-between items-center">
-                    <span class="font-medium">${p.period_id === 'CURRENT' ? 'Текущий период' : p.label}</span>
-                    <span class="text-base ${p.remaining_debt > 0 ? 'text-red-600 font-semibold' : 'text-green-600'}">
-                        ${formatMoney(p.remaining_debt)}
-                    </span>
-                </div>
-                <div class="text-sm text-gray-500 mt-1 flex justify-between">
-                    <span>Услуг: ${p.services_count}</span>
-                    <span>Выплат: ${p.payouts_count} ${p.total_payouts > 0 ? `(${formatMoney(p.total_payouts)})` : ''}</span>
-                </div>
+        <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
+            <div class="grid grid-cols-4 text-center text-sm">
+                <button onclick="showScreen('dashboard')" class="py-3 text-gray-600 hover:text-blue-600">📊</button>
+                <button onclick="showScreen('history')" class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">📅</button>
+                <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">📋</button>
+                <button onclick="showScreen('catalog')" class="py-3 text-gray-600 hover:text-blue-600">⚙️</button>
             </div>
-            `).join('')}
         </div>
-    </div>
+
+        <div class="bg-white rounded-lg shadow p-4">
+            <h2 class="text-xl font-semibold mb-4">📅 Периоды</h2>
+            <div class="space-y-3">
+                ${periods.map(p => `
+                    <div class="border rounded-lg p-4 cursor-pointer hover:bg-gray-50 transition-colors" 
+                         onclick="showScreen('periodDetail', { periodId: '${p.period_id}' })">
+                        <div class="flex justify-between items-start">
+                            <div class="flex-grow">
+                                <p class="font-medium text-base">${p.label}</p>
+                                <p class="text-xs text-gray-500 mt-1">${getPeriodStatusText(p.status)}</p>
+                            </div>
+                            <div class="text-right">
+                                <p class="text-base font-semibold ${p.remaining_debt > 0 ? 'text-red-600' : 'text-green-600'}">
+                                    ${formatMoney(p.remaining_debt)}
+                                </p>
+                                <p class="text-xs text-gray-400 mt-1">${p.services_count} услуг</p>
+                            </div>
+                        </div>
+                        ${p.total_payouts > 0 ? `
+                            <div class="mt-3 pt-2 border-t text-xs text-gray-500 flex justify-between items-center">
+                                <span>💳 Выплачено: ${formatMoney(p.total_payouts)}</span>
+                                <span>${p.payouts_count} выплат(ы)</span>
+                            </div>
+                        ` : ''}
+                    </div>
+                `).join('')}
+            </div>
+        </div>
     `;
 }
 
@@ -1364,85 +1371,111 @@ function renderPeriodDetail(periodId) {
     const periodPayouts = payouts.filter(p => p.period_id === periodId);
 
     const totalServiceCost = periodTransactions.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
-    const totalDiscount = periodTransactions.reduce((sum, t) => sum + (t.discount || 0), 0);
+    const totalDiscount = periodTransactions.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
     const totalMasterEarnings = periodTransactions.reduce((sum, t) => sum + t.master_earnings, 0);
     const totalPayouts = periodPayouts.reduce((sum, p) => sum + p.amount, 0);
     const remainingDebt = totalMasterEarnings - totalPayouts;
 
+    const isCurrent = periodId === 'CURRENT';
+    const periodLabel = formatPeriodLabel(periodId, transactions);
+    
     const groupedByDate = {};
     periodTransactions.forEach(t => {
-        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU', {
-            day: 'numeric',
-            month: 'long',
-            year: 'numeric'
+        const date = new Date(t.service_date);
+        const dateKey = date.toLocaleDateString('ru-RU', { 
+            weekday: 'short', 
+            day: 'numeric', 
+            month: 'long' 
         });
         if (!groupedByDate[dateKey]) groupedByDate[dateKey] = [];
         groupedByDate[dateKey].push(t);
     });
 
-    const isCurrent = periodId === 'CURRENT';
     const content = document.getElementById('content');
     content.innerHTML = `
-    <div class="bg-white rounded-lg shadow p-4">
-        <div class="flex justify-between items-center mb-4">
-            <h2 class="text-xl font-semibold">${isCurrent ? 'Текущий период' : 'Отчет'}</h2>
-            <button onclick="showScreen('history')" class="text-blue-500 text-base px-3 py-2">← Назад</button>
-        </div>
-
-        <div class="space-y-2 text-base">
-            <p>Диапазон: <span class="font-medium">${getPeriodDateRange(periodTransactions)}</span></p>
-            <p>Общая стоимость: <span class="font-medium">${formatMoney(totalServiceCost)}</span></p>
-            ${totalDiscount > 0 ? `<p class="text-red-500">Скидки: <span class="font-medium">-${formatMoney(totalDiscount)}</span></p>` : ''}
-            <p>Сумма мастеру: <span class="font-medium text-green-600">${formatMoney(totalMasterEarnings)}</span></p>
-            <p>Выплаты: <span class="font-medium text-blue-600">${formatMoney(totalPayouts)}</span></p>
-            <p class="text-lg font-bold ${remainingDebt > 0 ? 'text-red-600' : 'text-green-600'}">Остаток:
-                ${formatMoney(remainingDebt)}</p>
-        </div>
-
-        ${isCurrent ? `
-        <div class="mt-4 p-3 bg-yellow-50 rounded-lg">
-            <p class="text-sm text-yellow-800">Это текущий период. Вы можете редактировать транзакции.</p>
-        </div>
-        ` : ''}
-
-        <div class="mt-4">
-            <h3 class="font-semibold mb-2">Выплаты</h3>
-            ${periodPayouts.length > 0 ? periodPayouts.map(p => `
-            <div class="flex justify-between text-base border-b py-2">
-                <span>${new Date(p.date).toLocaleDateString('ru-RU')}</span>
-                <span class="font-medium">${formatMoney(p.amount)}</span>
-                ${p.comment ? `<span class="text-sm text-gray-500">${p.comment}</span>` : ''}
-            </div>
-            `).join('') : '<p class="text-gray-500">Нет выплат</p>'}
-        </div>
-
-        ${!isCurrent && remainingDebt > 0 ? `
-        <button onclick="showPayoutModal('${periodId}', ${remainingDebt})"
-            class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 mt-4 text-base">
-            Внести оплату
-        </button>
-        ` : ''}
-
-        <div class="mt-6">
-            <h3 class="font-semibold mb-3">Услуги</h3>
-            ${Object.entries(groupedByDate).map(([date, services]) => `
-            <div class="mb-3">
-                <p class="text-sm text-gray-500 mb-1">${date}</p>
-                ${services.map(s => `
-                <div class="flex justify-between items-center py-2 border-b text-sm ${isCurrent ? 'hover:bg-gray-50 cursor-pointer' : ''}"
-                    ${isCurrent ? `onclick="editTransaction('${s.id}')" ` : ''}>
-                    <span class="flex-grow">${s.service_name}</span>
-                    <span class="font-medium mx-2">${formatMoney(s.full_price || 0)}</span>
-                    ${s.discount > 0 ? `<span class="text-red-500 text-xs">-${formatMoney(s.discount)}</span>` : ''}
-                    <span class="text-xs ${s.master_percent !== settings.DEFAULT_PERCENT ? 'bg-yellow-100 text-yellow-800 px-2 py-1 rounded' : 'text-gray-400'}">${s.master_percent}%</span>
-                    <span class="text-green-600 font-medium mx-2">${formatMoney(s.master_earnings)}</span>
-                    ${isCurrent ? '<span class="text-blue-500">✎</span>' : ''}
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex justify-between items-center mb-4">
+                <div>
+                    <h2 class="text-xl font-semibold">${periodLabel}</h2>
+                    <p class="text-sm text-gray-500">${periodTransactions.length} услуг</p>
                 </div>
+                <button onclick="showScreen('history')" class="text-blue-500 text-base px-3 py-2">←</button>
+            </div>
+            
+            <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                <h3 class="font-semibold mb-3">📊 Итого</h3>
+                <div class="space-y-2 text-sm">
+                    <div class="flex justify-between">
+                        <span class="text-gray-600">Общая стоимость:</span>
+                        <span class="font-medium">${formatMoney(totalServiceCost)}</span>
+                    </div>
+                    ${totalDiscount > 0 ? `
+                        <div class="flex justify-between">
+                            <span class="text-gray-600">Скидки:</span>
+                            <span class="font-medium text-red-500">-${formatMoney(totalDiscount)}</span>
+                        </div>
+                    ` : ''}
+                    <div class="flex justify-between">
+                        <span class="text-gray-600">Заработок:</span>
+                        <span class="font-medium text-green-600">${formatMoney(totalMasterEarnings)}</span>
+                    </div>
+                    <div class="flex justify-between">
+                        <span class="text-gray-600">Выплаты:</span>
+                        <span class="font-medium text-blue-600">${formatMoney(totalPayouts)}</span>
+                    </div>
+                    <div class="flex justify-between border-t pt-2">
+                        <span class="font-semibold">Остаток:</span>
+                        <span class="font-bold ${remainingDebt > 0 ? 'text-red-600' : 'text-green-600'}">
+                            ${formatMoney(remainingDebt)}
+                        </span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mb-4">
+                <h3 class="font-semibold mb-2">💳 Выплаты</h3>
+                ${periodPayouts.length > 0 ? periodPayouts.map(p => `
+                    <div class="flex justify-between items-center text-sm border-b py-2">
+                        <span class="text-gray-600">${new Date(p.date).toLocaleDateString('ru-RU')}</span>
+                        <span class="font-medium">${formatMoney(p.amount)}</span>
+                        ${p.comment ? `<span class="text-xs text-gray-400">${p.comment}</span>` : ''}
+                    </div>
+                `).join('') : '<p class="text-sm text-gray-400">Нет выплат</p>'}
+            </div>
+            
+            ${!isCurrent && remainingDebt > 0 ? `
+                <button onclick="showPayoutModal('${periodId}', ${remainingDebt})" 
+                        class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 mb-4 text-base">
+                    💰 Внести оплату
+                </button>
+            ` : ''}
+            
+            <div>
+                <h3 class="font-semibold mb-3">📅 Услуги по дням</h3>
+                ${Object.entries(groupedByDate).map(([date, services]) => `
+                    <div class="mb-4">
+                        <p class="text-sm text-gray-500 mb-2">${date}</p>
+                        <div class="space-y-2">
+                            ${services.map(s => `
+                                <div class="flex justify-between items-center text-sm border-b pb-2 ${isCurrent ? 'cursor-pointer hover:bg-gray-50' : ''}" 
+                                     ${isCurrent ? `onclick="editTransaction('${s.id}')"` : ''}>
+                                    <span class="flex-grow">${s.service_name}</span>
+                                    <span class="font-medium mx-2">${formatMoney(s.final_price || s.full_price || 0)}</span>
+                                    ${s.discount_percent > 0 ? `
+                                        <span class="text-red-500 text-xs">-${s.discount_percent}%</span>
+                                    ` : ''}
+                                    <span class="text-xs mx-2 ${s.master_percent !== settings.DEFAULT_PERCENT ? 'bg-yellow-100 text-yellow-800 px-2 py-1 rounded' : 'text-gray-400'}">
+                                        ${s.master_percent}%
+                                    </span>
+                                    <span class="text-green-600 font-medium">${formatMoney(s.master_earnings)}</span>
+                                    ${isCurrent ? '<span class="text-blue-500 ml-1">✎</span>' : ''}
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
                 `).join('')}
             </div>
-            `).join('')}
         </div>
-    </div>
     `;
 }
 function showLoading(message = 'Загрузка...') {
@@ -1566,13 +1599,48 @@ function calculateCalendarEarnings(transactions, period) {
 
     return filtered.reduce((sum, t) => sum + t.master_earnings, 0);
 }
+function formatPeriodLabel(periodId, transactions = []) {
+    if (periodId === 'CURRENT') {
+        const currentTransactions = transactions.filter(t => t.period_id === 'CURRENT');
+        if (currentTransactions.length > 0) {
+            const dates = currentTransactions.map(t => new Date(t.service_date));
+            const firstDate = new Date(Math.min(...dates));
+            return `Текущий (с ${firstDate.toLocaleDateString('ru-RU')})`;
+        }
+        return 'Текущий период';
+    }
+    
+    const periodTransactions = transactions.filter(t => t.period_id === periodId);
+    if (periodTransactions.length > 0) {
+        const dates = periodTransactions.map(t => new Date(t.service_date));
+        const minDate = new Date(Math.min(...dates));
+        const maxDate = new Date(Math.max(...dates));
+        
+        if (minDate.toDateString() === maxDate.toDateString()) {
+            return minDate.toLocaleDateString('ru-RU');
+        }
+        
+        return `${minDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'numeric'})} - ${maxDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'numeric'})}`;
+    }
+    
+    return periodId.replace('PERIOD_', '').replace(/_/g, ' ');
+}
 
+function getPeriodStatusText(status) {
+    switch(status) {
+        case 'Открыт': return '🔵 Открыт';
+        case 'Оплачен': return '✅ Оплачен';
+        case 'Частично оплачен': return '🟡 Частично оплачен';
+        case 'Ожидает оплаты': return '🔴 Ожидает оплаты';
+        default: return status;
+    }
+}
 function getPeriodsSummary(transactions, payouts) {
     const periodsMap = new Map();
-
+    
     periodsMap.set('CURRENT', {
         period_id: 'CURRENT',
-        label: 'Текущий',
+        label: formatPeriodLabel('CURRENT', transactions),
         services_count: 0,
         payouts_count: 0,
         total_payouts: 0,
@@ -1584,7 +1652,7 @@ function getPeriodsSummary(transactions, payouts) {
         if (!periodsMap.has(t.period_id)) {
             periodsMap.set(t.period_id, {
                 period_id: t.period_id,
-                label: t.period_id.replace('PERIOD_', '').replace(/_/g, ' '),
+                label: formatPeriodLabel(t.period_id, transactions),
                 services_count: 0,
                 payouts_count: 0,
                 total_payouts: 0,
@@ -1601,7 +1669,7 @@ function getPeriodsSummary(transactions, payouts) {
         if (!periodsMap.has(p.period_id)) {
             periodsMap.set(p.period_id, {
                 period_id: p.period_id,
-                label: p.period_id.replace('PERIOD_', '').replace(/_/g, ' '),
+                label: formatPeriodLabel(p.period_id, transactions),
                 services_count: 0,
                 payouts_count: 0,
                 total_payouts: 0,
