@@ -287,20 +287,20 @@ function renderDashboard() {
 
         <!-- Календарная аналитика -->
         <div class="grid grid-cols-3 gap-3 text-center">
-            <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('today')">
-                <p class="text-xs text-gray-400">Сегодня</p>
-                <p class="font-semibold text-base">${formatMoney(todayEarnings)}</p>
-            </div>
-            <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('month')">
-                <p class="text-xs text-gray-400">Месяц</p>
-                <p class="font-semibold text-base">${formatMoney(monthEarnings)}</p>
-            </div>
-            <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('year')">
-                <p class="text-xs text-gray-400">Год</p>
-                <p class="font-semibold text-base">${formatMoney(yearEarnings)}</p>
-            </div>
+             <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('today')">
+                 <p class="text-xs text-gray-400">Сегодня</p>
+                 <p class="font-semibold text-base">${formatMoney(todayEarnings)}</p>
+             </div>
+             <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('month')">
+                 <p class="text-xs text-gray-400">Месяц</p>
+                 <p class="font-semibold text-base">${formatMoney(monthEarnings)}</p>
+             </div>
+             <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('year')">
+                 <p class="text-xs text-gray-400">Год</p>
+                 <p class="font-semibold text-base">${formatMoney(yearEarnings)}</p>
+             </div>
         </div>
-    </div>
+            
     `;
 }
 
@@ -353,37 +353,33 @@ function addServiceRow(serviceData = {}) {
     rowDiv.className = 'service-row border rounded-lg p-3 bg-gray-50';
     rowDiv.id = `row-${rowId}`;
     rowDiv.innerHTML = `
-    <div class="flex space-x-2 items-start">
-        <div class="flex-grow">
-            <select class="w-full p-3 border border-gray-300 rounded text-base service-select">
-                <option value="">Выберите услугу...</option>
-                ${servicesCatalog.map(s => `<option value="${s.service_id}" ${s.service_id === serviceData.service_id ? 'selected' : ''}>${s.service_name}</option>`).join('')}
-            </select>
+        <div class="flex space-x-2 items-start">
+            <div class="flex-grow">
+                <select class="w-full p-3 border border-gray-300 rounded text-base service-select">
+                    <option value="">Выберите услугу...</option>
+                    ${servicesCatalog.map(s => `<option value="${s.service_id}" ${s.service_id === serviceData.service_id ? 'selected' : ''}>${s.service_name}</option>`).join('')}
+                </select>
+            </div>
+            <button onclick="deleteServiceRow('${rowId}')" class="text-red-500 hover:text-red-700 text-2xl px-3 py-2">×</button>
         </div>
-        <button onclick="deleteServiceRow('${rowId}')"
-            class="text-red-500 hover:text-red-700 text-2xl px-3 py-2">×</button>
-    </div>
-    <div class="grid grid-cols-3 gap-2 mt-2">
-        <div>
-            <label class="block text-xs text-gray-500">Цена (₽)</label>
-            <input type="number" class="w-full p-3 border border-gray-300 rounded text-base price-input"
-                value="${serviceData.full_price || ''}" placeholder="0">
+        <div class="grid grid-cols-3 gap-2 mt-2">
+            <div>
+                <label class="block text-xs text-gray-500">Цена (₽)</label>
+                <input type="number" class="w-full p-3 border border-gray-300 rounded text-base price-input" value="${serviceData.full_price || ''}" placeholder="0">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500">Скидка (%)</label>
+                <input type="number" class="w-full p-3 border border-gray-300 rounded text-base discount-percent-input" value="${serviceData.discount_percent || 0}" placeholder="0" min="0" max="100">
+            </div>
+            <div>
+                <label class="block text-xs text-gray-500">Процент</label>
+                <input type="number" class="w-full p-3 border border-gray-300 rounded text-base percent-input" value="${serviceData.master_percent || appState.data.settings.DEFAULT_PERCENT || 50}">
+            </div>
         </div>
-        <div>
-            <label class="block text-xs text-gray-500">Скидка (₽)</label>
-            <input type="number" class="w-full p-3 border border-gray-300 rounded text-base discount-input"
-                value="${serviceData.discount || 0}" placeholder="0">
+        <div class="flex justify-between items-center mt-2 text-sm">
+            <span class="text-gray-500">Итого со скидкой:</span>
+            <span class="font-semibold final-price-display">0 ₽</span>
         </div>
-        <div>
-            <label class="block text-xs text-gray-500">Процент</label>
-            <input type="number" class="w-full p-3 border border-gray-300 rounded text-base percent-input"
-                value="${serviceData.master_percent || appState.data.settings.DEFAULT_PERCENT || 50}">
-        </div>
-    </div>
-    <div class="text-right mt-1">
-        <span class="text-xs text-gray-500">Итого: </span>
-        <span class="text-sm font-semibold final-price-display">0 ₽</span>
-    </div>
     `;
 
     servicesList.appendChild(rowDiv);
@@ -394,15 +390,16 @@ function addServiceRow(serviceData = {}) {
 function attachRowListeners(rowDiv) {
     const select = rowDiv.querySelector('.service-select');
     const priceInput = rowDiv.querySelector('.price-input');
-    const discountInput = rowDiv.querySelector('.discount-input');
+    const discountPercentInput = rowDiv.querySelector('.discount-percent-input');
     const percentInput = rowDiv.querySelector('.percent-input');
     const finalPriceDisplay = rowDiv.querySelector('.final-price-display');
 
     function updateFinalPrice() {
         const price = parseFloat(priceInput.value) || 0;
-        const discount = parseFloat(discountInput.value) || 0;
-        const finalPrice = Math.max(0, price - discount);
-        finalPriceDisplay.textContent = formatMoney(finalPrice);
+        const discountPercent = parseFloat(discountPercentInput.value) || 0;
+        const discountAmount = price * (discountPercent / 100);
+        const finalPrice = Math.max(0, price - discountAmount);
+        finalPriceDisplay.textContent = formatMoney(finalPrice) + (discountPercent > 0 ? ` (-${discountPercent}%)` : '');
         updateTotals();
     }
 
@@ -410,14 +407,14 @@ function attachRowListeners(rowDiv) {
         const service = appState.data.servicesCatalog.find(s => s.service_id === e.target.value);
         if (service) {
             priceInput.value = service.base_price;
-            discountInput.value = 0;
+            discountPercentInput.value = 0;
             percentInput.value = appState.data.settings.DEFAULT_PERCENT || 50;
             updateFinalPrice();
         }
     });
 
     priceInput.addEventListener('input', updateFinalPrice);
-    discountInput.addEventListener('input', updateFinalPrice);
+    discountPercentInput.addEventListener('input', updateFinalPrice);
     percentInput.addEventListener('input', updateTotals);
 }
 
@@ -437,23 +434,23 @@ function updateTotals() {
 
     rows.forEach(row => {
         const price = parseFloat(row.querySelector('.price-input').value) || 0;
-        const discount = parseFloat(row.querySelector('.discount-input').value) || 0;
+        const discountPercent = parseFloat(row.querySelector('.discount-percent-input').value) || 0;
         const percent = parseFloat(row.querySelector('.percent-input').value) || 0;
-        const finalPrice = Math.max(0, price - discount);
-
+        const discountAmount = price * (discountPercent / 100);
+        const finalPrice = price - discountAmount;
+        
         totalFull += finalPrice;
-        totalDiscount += discount;
+        totalDiscount += discountAmount;
         totalMaster += finalPrice * (percent / 100);
     });
 
     document.getElementById('total-full-price').textContent = formatMoney(totalFull);
     document.getElementById('total-master-earnings').textContent = formatMoney(totalMaster);
-
-    // Показываем скидку если есть
+    
     const discountElement = document.getElementById('total-discount');
     if (discountElement) {
         if (totalDiscount > 0) {
-            discountElement.textContent = `Скидка: ${formatMoney(totalDiscount)}`;
+            discountElement.textContent = `Общая скидка: ${formatMoney(totalDiscount)}`;
             discountElement.classList.remove('hidden');
         } else {
             discountElement.classList.add('hidden');
@@ -469,7 +466,7 @@ async function handleSaveVisit() {
     rows.forEach(row => {
         const select = row.querySelector('.service-select');
         const priceInput = row.querySelector('.price-input');
-        const discountInput = row.querySelector('.discount-input');
+        const discountPercentInput = row.querySelector('.discount-percent-input');
         const percentInput = row.querySelector('.percent-input');
 
         if (!select.value || !priceInput.value) {
@@ -481,7 +478,7 @@ async function handleSaveVisit() {
         services.push({
             service_name: serviceName,
             full_price: parseFloat(priceInput.value) || 0,
-            discount: parseFloat(discountInput.value) || 0,
+            discount_percent: parseFloat(discountPercentInput.value) || 0,
             master_percent: parseFloat(percentInput.value) || appState.data.settings.DEFAULT_PERCENT
         });
     });
@@ -515,6 +512,135 @@ async function handleSaveVisit() {
         showToast('Ошибка сети. Визит сохранен локально.');
         showScreen('dashboard');
     }
+}
+function showAnalytics(period = 'month') {
+    const { transactions } = appState.data;
+    const now = new Date();
+    let startDate, endDate = now;
+    
+    if (period === 'today') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    } else if (period === 'week') {
+        startDate = new Date(now);
+        startDate.setDate(now.getDate() - 7);
+    } else if (period === 'month') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    } else if (period === 'quarter') {
+        const quarter = Math.floor(now.getMonth() / 3);
+        startDate = new Date(now.getFullYear(), quarter * 3, 1);
+    } else if (period === 'year') {
+        startDate = new Date(now.getFullYear(), 0, 1);
+    } else if (period === 'custom') {
+        // Здесь можно добавить выбор произвольного периода
+        const customStart = prompt('Введите начальную дату (YYYY-MM-DD):');
+        const customEnd = prompt('Введите конечную дату (YYYY-MM-DD):');
+        if (customStart) startDate = new Date(customStart);
+        if (customEnd) endDate = new Date(customEnd);
+        else startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    }
+    
+    const filtered = transactions.filter(t => {
+        const date = new Date(t.service_date);
+        return date >= startDate && date <= endDate;
+    });
+    
+    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
+    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
+    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
+    
+    // Группировка по дням
+    const dailyData = {};
+    filtered.forEach(t => {
+        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU');
+        if (!dailyData[dateKey]) {
+            dailyData[dateKey] = {
+                services: 0,
+                amount: 0,
+                earnings: 0,
+                discounts: 0
+            };
+        }
+        dailyData[dateKey].services++;
+        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
+        dailyData[dateKey].earnings += t.master_earnings;
+        dailyData[dateKey].discounts += (t.discount_amount || 0);
+    });
+    
+    // Создаем простой график (бар-чарт)
+    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
+    const barChart = Object.entries(dailyData).map(([date, data]) => {
+        const barHeight = (data.amount / maxAmount) * 150;
+        return `
+            <div class="flex flex-col items-center">
+                <div class="text-xs mb-1">${formatMoney(data.amount)}</div>
+                <div class="w-8 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
+                <div class="text-xs mt-1">${date.split('.')[0]}</div>
+            </div>
+        `;
+    }).join('');
+    
+    const content = document.getElementById('content');
+    content.innerHTML = `
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Аналитика</h2>
+                <button onclick="showScreen('dashboard')" class="text-blue-500">← Назад</button>
+            </div>
+            
+            <!-- Выбор периода -->
+            <div class="flex space-x-2 mb-4 overflow-x-auto">
+                <button onclick="showAnalytics('today')" class="px-3 py-2 rounded-lg ${period === 'today' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Сегодня</button>
+                <button onclick="showAnalytics('week')" class="px-3 py-2 rounded-lg ${period === 'week' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Неделя</button>
+                <button onclick="showAnalytics('month')" class="px-3 py-2 rounded-lg ${period === 'month' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Месяц</button>
+                <button onclick="showAnalytics('quarter')" class="px-3 py-2 rounded-lg ${period === 'quarter' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Квартал</button>
+                <button onclick="showAnalytics('year')" class="px-3 py-2 rounded-lg ${period === 'year' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Год</button>
+            </div>
+            
+            <!-- Сводка -->
+            <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Услуг оказано</p>
+                    <p class="text-xl font-semibold">${filtered.length}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Общая стоимость</p>
+                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Скидки</p>
+                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Заработок</p>
+                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
+                </div>
+            </div>
+            
+            <!-- График -->
+            <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                <h3 class="font-semibold mb-3">Доходы по дням</h3>
+                <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 200px;">
+                    ${barChart || '<p class="text-gray-500">Нет данных</p>'}
+                </div>
+            </div>
+            
+            <!-- Таблица -->
+            <div class="space-y-2">
+                <h3 class="font-semibold mb-2">Детализация</h3>
+                ${filtered.map(t => `
+                    <div class="flex justify-between items-center border-b py-2 text-sm">
+                        <span>${t.service_name}</span>
+                        <span>${formatMoney(t.full_price || 0)}</span>
+                        ${t.discount_percent > 0 ? `<span class="text-red-500">-${t.discount_percent}%</span>` : ''}
+                        <span class="text-green-600">${formatMoney(t.master_earnings)}</span>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `;
+    
+    appState.currentScreen = 'analytics';
+    document.getElementById('fab-add').classList.add('hidden');
 }
 
 function renderHistory() {
@@ -1282,6 +1408,7 @@ window.showAnalytics = showAnalytics;
 window.editTransaction = editTransaction;
 window.saveTransactionEdit = saveTransactionEdit;
 window.deleteTransaction = deleteTransaction;
+window.showAnalytics = showAnalytics;
 
 document.addEventListener('DOMContentLoaded', initApp);
 
