@@ -1,6 +1,6 @@
 // ===================== КОНФИГУРАЦИЯ И СОСТОЯНИЕ =====================
 const API_URL = 'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJD84CfxkirrKPtkDq7gfFcPd3S1nUsg2D-k6YT6i0BNxG-g/exec'; // ЗАМЕНИТЕ НА ВАШ URL
-let AUTH_TOKEN = localStorage.getItem('auth_token') || '';
+let AUTH_TOKEN = localStorage.getItem('auth_token') || ''; // Берем из localStorage
 
 let appState = {
     data: {
@@ -59,6 +59,10 @@ function loadPendingSync() {
 
 // ===================== API ВЗАИМОДЕЙСТВИЕ =====================
 async function apiCall(action, params = {}) {
+    if (!AUTH_TOKEN) {
+        throw new Error('Токен не задан. Введите токен авторизации.');
+    }
+    
     const formData = new URLSearchParams();
     formData.append('token', AUTH_TOKEN);
     formData.append('action', action);
@@ -138,7 +142,7 @@ async function fetchData() {
 // ===================== НАВИГАЦИЯ =====================
 function showScreen(screenName, params = {}) {
     appState.currentScreen = screenName;
-    closeModal(); // Закрываем модальное окно при смене экрана
+    closeModal();
     
     if (screenName === 'dashboard') renderDashboard();
     else if (screenName === 'addVisit') renderAddVisit();
@@ -148,6 +152,7 @@ function showScreen(screenName, params = {}) {
     else if (screenName === 'periodDetail') renderPeriodDetail(params.periodId);
     else if (screenName === 'initialSetup') renderInitialSetup();
     
+    // Управление кнопкой FAB
     const fab = document.getElementById('fab-add');
     if (screenName === 'dashboard') {
         fab.classList.remove('hidden');
@@ -157,38 +162,78 @@ function showScreen(screenName, params = {}) {
     
     window.scrollTo(0, 0);
 }
-
 // ===================== ЭКРАНЫ =====================
 function renderInitialSetup() {
     const content = document.getElementById('content');
+    const loading = document.getElementById('loading');
+    
+    // Скрываем загрузку, показываем контент
+    loading.classList.add('hidden');
+    content.classList.remove('hidden');
+    
     content.innerHTML = `
-        <div class="bg-white rounded-lg shadow p-6">
-            <h2 class="text-xl font-semibold mb-4">Первоначальная настройка</h2>
-            <p class="text-sm text-gray-600 mb-4">Введите ваш секретный токен</p>
-            <input type="password" id="auth-token-input" placeholder="Токен" class="w-full p-3 border border-gray-300 rounded mb-3 text-base" value="${AUTH_TOKEN}">
-            <button onclick="handleInitialize()" class="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 text-base font-medium">Подключиться</button>
+        <div class="bg-white rounded-lg shadow p-6 mt-8">
+            <h2 class="text-xl font-semibold mb-4 text-center">Вход в приложение</h2>
+            <p class="text-sm text-gray-600 mb-4 text-center">
+                Введите ваш секретный токен для доступа к данным
+            </p>
+            <input 
+                type="password" 
+                id="auth-token-input" 
+                placeholder="Введите токен" 
+                class="w-full p-3 border border-gray-300 rounded mb-3 text-base"
+                autocomplete="off"
+            >
+            <button 
+                onclick="handleInitialize()" 
+                class="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 text-base font-medium"
+            >
+                Подключиться
+            </button>
+            <p class="text-xs text-gray-400 mt-4 text-center">
+                Токен можно получить у администратора системы
+            </p>
         </div>
     `;
-    document.getElementById('loading').classList.add('hidden');
-    content.classList.remove('hidden');
+    
+    // Фокус на поле ввода
+    setTimeout(() => {
+        document.getElementById('auth-token-input')?.focus();
+    }, 100);
 }
 
 async function handleInitialize() {
-    const token = document.getElementById('auth-token-input').value.trim();
-    if (token) {
-        AUTH_TOKEN = token;
-        localStorage.setItem('auth_token', token); // Сохраняем в localStorage
-        try {
-            await fetchData();
-            showToast('Подключено успешно!');
-            showScreen('dashboard');
-        } catch (e) {
-            localStorage.removeItem('auth_token'); // Удаляем если неверный
-            AUTH_TOKEN = '';
-            showToast('Ошибка подключения: ' + e.message);
-        }
-    } else {
+    const tokenInput = document.getElementById('auth-token-input');
+    const token = tokenInput.value.trim();
+    
+    if (!token) {
         showToast('Введите токен');
+        return;
+    }
+    
+    // Сохраняем токен
+    AUTH_TOKEN = token;
+    localStorage.setItem('auth_token', token);
+    
+    // Показываем загрузку
+    const button = tokenInput.nextElementSibling;
+    button.disabled = true;
+    button.textContent = 'Подключение...';
+    
+    try {
+        await fetchData();
+        showToast('Подключено успешно!');
+        showScreen('dashboard');
+    } catch (e) {
+        console.error('Ошибка подключения:', e);
+        // Удаляем неверный токен
+        localStorage.removeItem('auth_token');
+        AUTH_TOKEN = '';
+        showToast('Ошибка: ' + e.message);
+        
+        // Восстанавливаем кнопку
+        button.disabled = false;
+        button.textContent = 'Подключиться';
     }
 }
 
@@ -925,17 +970,40 @@ async function handleClosePeriod() {
 }
 
 async function initApp() {
+    console.log('Инициализация приложения...');
+    
+    // Проверяем наличие токена
+    if (!AUTH_TOKEN) {
+        console.log('Токен не найден, показываем экран входа');
+        showScreen('initialSetup');
+        return;
+    }
+    
+    console.log('Токен найден, загружаем данные...');
+    
+    // Показываем загрузку
     document.getElementById('loading').classList.remove('hidden');
     document.getElementById('content').classList.add('hidden');
-
+    
+    // Синхронизируем оффлайн-данные
     await syncPendingVisits();
-
+    
+    // Пытаемся загрузить данные
     try {
         await fetchData();
+        console.log('Данные загружены успешно');
         showScreen('dashboard');
     } catch (e) {
-        console.error('Init error:', e);
-        showScreen('initialSetup');
+        console.error('Ошибка загрузки данных:', e);
+        // Если ошибка авторизации - показываем экран входа
+        if (e.message.includes('авторизац') || e.message.includes('токен')) {
+            localStorage.removeItem('auth_token');
+            AUTH_TOKEN = '';
+            showScreen('initialSetup');
+        } else {
+            // Другая ошибка - показываем сообщение
+            showScreen('initialSetup');
+        }
     }
 }
 
