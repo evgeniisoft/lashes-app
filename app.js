@@ -1,3 +1,27 @@
+// Проверка версии приложения
+const APP_VERSION = '2.0.0';
+
+// При загрузке проверяем версию
+window.addEventListener('load', () => {
+  const savedVersion = localStorage.getItem('app_version');
+  if (savedVersion !== APP_VERSION) {
+    localStorage.setItem('app_version', APP_VERSION);
+    
+    // Удаляем старый Service Worker
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(registrations => {
+        registrations.forEach(registration => {
+          registration.unregister();
+        });
+      });
+      
+      // Перезагружаем страницу
+      setTimeout(() => {
+        window.location.reload(true);
+      }, 1000);
+    }
+  }
+});
 // ===================== КОНФИГУРАЦИЯ И СОСТОЯНИЕ =====================
 const API_URL =
 'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJD84CfxkirrKPtkDq7gfFcPd3S1nUsg2D-k6YT6i0BNxG-g/exec'; // ЗАМЕНИТЕ НА ВАШ URL
