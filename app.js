@@ -285,24 +285,225 @@ function renderDashboard() {
                 class="bg-yellow-500 text-white px-4 py-3 rounded-lg hover:bg-yellow-600 text-base">Закрыть</button>
         </div>
 
-        <!-- Календарная аналитика -->
-        <div class="grid grid-cols-3 gap-3 text-center">
-             <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('today')">
-                 <p class="text-xs text-gray-400">Сегодня</p>
-                 <p class="font-semibold text-base">${formatMoney(todayEarnings)}</p>
-             </div>
-             <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('month')">
-                 <p class="text-xs text-gray-400">Месяц</p>
-                 <p class="font-semibold text-base">${formatMoney(monthEarnings)}</p>
-             </div>
-             <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('year')">
-                 <p class="text-xs text-gray-400">Год</p>
-                 <p class="font-semibold text-base">${formatMoney(yearEarnings)}</p>
-             </div>
-        </div>
+                    <!-- Календарная аналитика -->
+            <div class="bg-white rounded-lg shadow p-5">
+                <p class="text-sm text-gray-500 mb-3">Доход по календарю (нажмите для деталей)</p>
+                <div class="grid grid-cols-3 gap-3 text-center">
+                    <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('today')">
+                        <p class="text-xs text-gray-400">Сегодня</p>
+                        <p class="font-semibold">${formatMoney(todayEarnings)}</p>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('month')">
+                        <p class="text-xs text-gray-400">За месяц</p>
+                        <p class="font-semibold">${formatMoney(monthEarnings)}</p>
+                    </div>
+                    <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('year')">
+                        <p class="text-xs text-gray-400">За год</p>
+                        <p class="font-semibold">${formatMoney(yearEarnings)}</p>
+                    </div>
+                </div>
+                <button onclick="showAnalytics('custom')" class="w-full mt-3 bg-gray-100 text-gray-700 py-2 rounded-lg text-sm">
+                    📊 Расширенная аналитика
+                </button>
+            </div>
             
     `;
 }
+
+function showAnalytics(period = 'month') {
+    const { transactions } = appState.data;
+    const now = new Date();
+    let startDate, endDate = now;
+    
+    if (period === 'today') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+        endDate = now;
+    } else if (period === 'week') {
+        startDate = new Date(now);
+        startDate.setDate(now.getDate() - 7);
+        endDate = now;
+    } else if (period === 'month') {
+        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+        endDate = now;
+    } else if (period === 'quarter') {
+        const quarter = Math.floor(now.getMonth() / 3);
+        startDate = new Date(now.getFullYear(), quarter * 3, 1);
+        endDate = now;
+    } else if (period === 'year') {
+        startDate = new Date(now.getFullYear(), 0, 1);
+        endDate = now;
+    } else if (period === 'custom') {
+        // Показываем модальное окно для выбора периода
+        showCustomPeriodModal();
+        return;
+    }
+    
+    renderAnalytics(startDate, endDate, period);
+}
+
+function showCustomPeriodModal() {
+    const modal = document.getElementById('modal');
+    const modalContent = document.getElementById('modal-content');
+    
+    modalContent.innerHTML = `
+        <h3 class="text-lg font-semibold mb-4">Выберите период</h3>
+        
+        <div class="space-y-3 mb-4">
+            <button onclick="showAnalytics('today')" class="w-full bg-gray-100 py-2 rounded-lg">Сегодня</button>
+            <button onclick="showAnalytics('week')" class="w-full bg-gray-100 py-2 rounded-lg">Последние 7 дней</button>
+            <button onclick="showAnalytics('month')" class="w-full bg-gray-100 py-2 rounded-lg">Текущий месяц</button>
+            <button onclick="showAnalytics('quarter')" class="w-full bg-gray-100 py-2 rounded-lg">Текущий квартал</button>
+            <button onclick="showAnalytics('year')" class="w-full bg-gray-100 py-2 rounded-lg">Текущий год</button>
+        </div>
+        
+        <div class="border-t pt-3">
+            <p class="text-sm font-medium mb-2">Произвольный период:</p>
+            <div class="space-y-2">
+                <div>
+                    <label class="block text-xs text-gray-500">С даты:</label>
+                    <input type="date" id="custom-start-date" class="w-full p-2 border border-gray-300 rounded">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500">По дату:</label>
+                    <input type="date" id="custom-end-date" class="w-full p-2 border border-gray-300 rounded">
+                </div>
+                <button onclick="applyCustomPeriod()" class="w-full bg-blue-500 text-white py-2 rounded-lg">Применить</button>
+            </div>
+        </div>
+    `;
+    
+    modal.classList.remove('hidden');
+}
+
+function applyCustomPeriod() {
+    const startDate = document.getElementById('custom-start-date').value;
+    const endDate = document.getElementById('custom-end-date').value;
+    
+    if (startDate && endDate) {
+        closeModal();
+        renderAnalytics(new Date(startDate), new Date(endDate), 'custom');
+    } else {
+        showToast('Выберите обе даты');
+    }
+}
+
+function renderAnalytics(startDate, endDate, periodName) {
+    const { transactions } = appState.data;
+    
+    // Фильтруем транзакции
+    const filtered = transactions.filter(t => {
+        const date = new Date(t.service_date);
+        return date >= startDate && date <= endDate;
+    });
+    
+    // Считаем итоги
+    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
+    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
+    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
+    
+    // Группировка по дням
+    const dailyData = {};
+    filtered.forEach(t => {
+        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU');
+        if (!dailyData[dateKey]) {
+            dailyData[dateKey] = {
+                services: 0,
+                amount: 0,
+                earnings: 0,
+                discounts: 0
+            };
+        }
+        dailyData[dateKey].services++;
+        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
+        dailyData[dateKey].earnings += t.master_earnings;
+        dailyData[dateKey].discounts += (t.discount_amount || 0);
+    });
+    
+    // Создаем простой график
+    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
+    const barChart = Object.entries(dailyData).map(([date, data]) => {
+        const barHeight = Math.max(5, (data.amount / maxAmount) * 150);
+        return `
+            <div class="flex flex-col items-center flex-shrink-0">
+                <div class="text-xs mb-1">${Math.round(data.amount)}</div>
+                <div class="w-10 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
+                <div class="text-xs mt-1">${date.split('.')[0]}.${date.split('.')[1]}</div>
+            </div>
+        `;
+    }).join('');
+    
+    const periodLabel = periodName === 'today' ? 'Сегодня' : 
+                        periodName === 'week' ? 'Последние 7 дней' :
+                        periodName === 'month' ? 'Текущий месяц' :
+                        periodName === 'quarter' ? 'Текущий квартал' :
+                        periodName === 'year' ? 'Текущий год' :
+                        'Произвольный период';
+    
+    const content = document.getElementById('content');
+    content.innerHTML = `
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Аналитика: ${periodLabel}</h2>
+                <button onclick="showScreen('dashboard')" class="text-blue-500 text-base">← Назад</button>
+            </div>
+            
+            <div class="text-sm text-gray-500 mb-3">
+                ${startDate.toLocaleDateString('ru-RU')} - ${endDate.toLocaleDateString('ru-RU')}
+            </div>
+            
+            <!-- Сводка -->
+            <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Услуг оказано</p>
+                    <p class="text-xl font-semibold">${filtered.length}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Общая стоимость</p>
+                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Скидки</p>
+                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Заработок</p>
+                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
+                </div>
+            </div>
+            
+            <!-- График -->
+            <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                <h3 class="font-semibold mb-3">Доходы по дням</h3>
+                <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 180px;">
+                    ${barChart || '<p class="text-gray-500">Нет данных за выбранный период</p>'}
+                </div>
+            </div>
+            
+            <!-- Кнопка смены периода -->
+            <button onclick="showCustomPeriodModal()" class="w-full bg-gray-100 text-gray-700 py-2 rounded-lg mb-4 text-sm">
+                📅 Изменить период
+            </button>
+            
+            <!-- Таблица -->
+            <div class="space-y-2">
+                <h3 class="font-semibold mb-2">Детализация</h3>
+                ${filtered.length > 0 ? filtered.map(t => `
+                    <div class="flex justify-between items-center border-b py-2 text-sm">
+                        <span class="flex-grow">${t.service_name}</span>
+                        <span class="mx-2">${formatMoney(t.full_price || 0)}</span>
+                        ${t.discount_percent > 0 ? `<span class="text-red-500 text-xs">-${t.discount_percent}%</span>` : ''}
+                        <span class="text-green-600 mx-2">${formatMoney(t.master_earnings)}</span>
+                    </div>
+                `).join('') : '<p class="text-gray-500">Нет транзакций</p>'}
+            </div>
+        </div>
+    `;
+    
+    appState.currentScreen = 'analytics';
+    document.getElementById('fab-add').classList.add('hidden');
+    window.scrollTo(0, 0);
+}
+
 
 function renderAddVisit() {
     const { servicesCatalog, settings } = appState.data;
@@ -512,135 +713,6 @@ async function handleSaveVisit() {
         showToast('Ошибка сети. Визит сохранен локально.');
         showScreen('dashboard');
     }
-}
-function showAnalytics(period = 'month') {
-    const { transactions } = appState.data;
-    const now = new Date();
-    let startDate, endDate = now;
-    
-    if (period === 'today') {
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    } else if (period === 'week') {
-        startDate = new Date(now);
-        startDate.setDate(now.getDate() - 7);
-    } else if (period === 'month') {
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    } else if (period === 'quarter') {
-        const quarter = Math.floor(now.getMonth() / 3);
-        startDate = new Date(now.getFullYear(), quarter * 3, 1);
-    } else if (period === 'year') {
-        startDate = new Date(now.getFullYear(), 0, 1);
-    } else if (period === 'custom') {
-        // Здесь можно добавить выбор произвольного периода
-        const customStart = prompt('Введите начальную дату (YYYY-MM-DD):');
-        const customEnd = prompt('Введите конечную дату (YYYY-MM-DD):');
-        if (customStart) startDate = new Date(customStart);
-        if (customEnd) endDate = new Date(customEnd);
-        else startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    }
-    
-    const filtered = transactions.filter(t => {
-        const date = new Date(t.service_date);
-        return date >= startDate && date <= endDate;
-    });
-    
-    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
-    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
-    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
-    
-    // Группировка по дням
-    const dailyData = {};
-    filtered.forEach(t => {
-        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU');
-        if (!dailyData[dateKey]) {
-            dailyData[dateKey] = {
-                services: 0,
-                amount: 0,
-                earnings: 0,
-                discounts: 0
-            };
-        }
-        dailyData[dateKey].services++;
-        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
-        dailyData[dateKey].earnings += t.master_earnings;
-        dailyData[dateKey].discounts += (t.discount_amount || 0);
-    });
-    
-    // Создаем простой график (бар-чарт)
-    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
-    const barChart = Object.entries(dailyData).map(([date, data]) => {
-        const barHeight = (data.amount / maxAmount) * 150;
-        return `
-            <div class="flex flex-col items-center">
-                <div class="text-xs mb-1">${formatMoney(data.amount)}</div>
-                <div class="w-8 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
-                <div class="text-xs mt-1">${date.split('.')[0]}</div>
-            </div>
-        `;
-    }).join('');
-    
-    const content = document.getElementById('content');
-    content.innerHTML = `
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xl font-semibold">Аналитика</h2>
-                <button onclick="showScreen('dashboard')" class="text-blue-500">← Назад</button>
-            </div>
-            
-            <!-- Выбор периода -->
-            <div class="flex space-x-2 mb-4 overflow-x-auto">
-                <button onclick="showAnalytics('today')" class="px-3 py-2 rounded-lg ${period === 'today' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Сегодня</button>
-                <button onclick="showAnalytics('week')" class="px-3 py-2 rounded-lg ${period === 'week' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Неделя</button>
-                <button onclick="showAnalytics('month')" class="px-3 py-2 rounded-lg ${period === 'month' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Месяц</button>
-                <button onclick="showAnalytics('quarter')" class="px-3 py-2 rounded-lg ${period === 'quarter' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Квартал</button>
-                <button onclick="showAnalytics('year')" class="px-3 py-2 rounded-lg ${period === 'year' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Год</button>
-            </div>
-            
-            <!-- Сводка -->
-            <div class="grid grid-cols-2 gap-3 mb-4">
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Услуг оказано</p>
-                    <p class="text-xl font-semibold">${filtered.length}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Общая стоимость</p>
-                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Скидки</p>
-                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Заработок</p>
-                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
-                </div>
-            </div>
-            
-            <!-- График -->
-            <div class="bg-gray-50 rounded-lg p-4 mb-4">
-                <h3 class="font-semibold mb-3">Доходы по дням</h3>
-                <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 200px;">
-                    ${barChart || '<p class="text-gray-500">Нет данных</p>'}
-                </div>
-            </div>
-            
-            <!-- Таблица -->
-            <div class="space-y-2">
-                <h3 class="font-semibold mb-2">Детализация</h3>
-                ${filtered.map(t => `
-                    <div class="flex justify-between items-center border-b py-2 text-sm">
-                        <span>${t.service_name}</span>
-                        <span>${formatMoney(t.full_price || 0)}</span>
-                        ${t.discount_percent > 0 ? `<span class="text-red-500">-${t.discount_percent}%</span>` : ''}
-                        <span class="text-green-600">${formatMoney(t.master_earnings)}</span>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-    `;
-    
-    appState.currentScreen = 'analytics';
-    document.getElementById('fab-add').classList.add('hidden');
 }
 
 function renderHistory() {
@@ -1409,6 +1481,9 @@ window.editTransaction = editTransaction;
 window.saveTransactionEdit = saveTransactionEdit;
 window.deleteTransaction = deleteTransaction;
 window.showAnalytics = showAnalytics;
+window.showCustomPeriodModal = showCustomPeriodModal;
+window.applyCustomPeriod = applyCustomPeriod;
+window.renderAnalytics = renderAnalytics;
 
 document.addEventListener('DOMContentLoaded', initApp);
 
