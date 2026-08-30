@@ -1,6 +1,6 @@
 // ===================== КОНФИГУРАЦИЯ И СОСТОЯНИЕ =====================
 const API_URL = 'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJD84CfxkirrKPtkDq7gfFcPd3S1nUsg2D-k6YT6i0BNxG-g/exec'; // ЗАМЕНИТЕ НА ВАШ URL
-let AUTH_TOKEN = 'irina2026'; // Можно менять через интерфейс
+let AUTH_TOKEN = localStorage.getItem('auth_token') || '';
 
 let appState = {
     data: {
@@ -177,11 +177,14 @@ async function handleInitialize() {
     const token = document.getElementById('auth-token-input').value.trim();
     if (token) {
         AUTH_TOKEN = token;
+        localStorage.setItem('auth_token', token); // Сохраняем в localStorage
         try {
             await fetchData();
             showToast('Подключено успешно!');
             showScreen('dashboard');
         } catch (e) {
+            localStorage.removeItem('auth_token'); // Удаляем если неверный
+            AUTH_TOKEN = '';
             showToast('Ошибка подключения: ' + e.message);
         }
     } else {
