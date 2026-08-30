@@ -1,7 +1,7 @@
 // ===================== КОНФИГУРАЦИЯ И СОСТОЯНИЕ =====================
 const API_URL =
 'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJD84CfxkirrKPtkDq7gfFcPd3S1nUsg2D-k6YT6i0BNxG-g/exec'; //
-ЗАМЕНИТЕ НА ВАШ URL
+ЗАМЕНИТЕ НА ВАШ URL 
 let AUTH_TOKEN = localStorage.getItem('auth_token') || ''; // Берем из localStorage
 
 let appState = {
