@@ -200,37 +200,26 @@ function renderInitialSetup() {
 }
 
 async function handleInitialize() {
-    const tokenInput = document.getElementById('auth-token-input');
-    const token = tokenInput.value.trim();
-
-    if (!token) {
+    const token = document.getElementById('auth-token-input').value.trim();
+    if (token) {
+        AUTH_TOKEN = token;
+        localStorage.setItem('auth_token', token);
+        
+        showLoading('Подключение...'); // ДОБАВЬТЕ
+        
+        try {
+            await fetchData();
+            hideLoading(); // ДОБАВЬТЕ
+            showToast('Подключено успешно!');
+            showScreen('dashboard');
+        } catch (e) {
+            hideLoading(); // ДОБАВЬТЕ
+            localStorage.removeItem('auth_token');
+            AUTH_TOKEN = '';
+            showToast('Ошибка: ' + e.message);
+        }
+    } else {
         showToast('Введите токен');
-        return;
-    }
-
-    // Сохраняем токен
-    AUTH_TOKEN = token;
-    localStorage.setItem('auth_token', token);
-
-    // Показываем загрузку
-    const button = tokenInput.nextElementSibling;
-    button.disabled = true;
-    button.textContent = 'Подключение...';
-
-    try {
-        await fetchData();
-        showToast('Подключено успешно!');
-        showScreen('dashboard');
-    } catch (e) {
-        console.error('Ошибка подключения:', e);
-        // Удаляем неверный токен
-        localStorage.removeItem('auth_token');
-        AUTH_TOKEN = '';
-        showToast('Ошибка: ' + e.message);
-
-        // Восстанавливаем кнопку
-        button.disabled = false;
-        button.textContent = 'Подключиться';
     }
 }
 
@@ -276,13 +265,15 @@ function renderDashboard() {
         </div>
 
         <!-- Текущий период -->
-        <div class="bg-white rounded-lg shadow p-5 flex justify-between items-center">
-            <div>
-                <p class="text-sm text-gray-500">Текущий период</p>
-                <p class="text-xl font-semibold">${formatMoney(currentPeriodEarnings)}</p>
+        <div class="bg-white rounded-lg shadow p-5">
+            <div class="flex justify-between items-center cursor-pointer" onclick="showScreen('periodDetail', { periodId: 'CURRENT' })">
+                <div>
+                    <p class="text-sm text-gray-500">Текущий период (нажмите для деталей)</p>
+                    <p class="text-xl font-semibold">${formatMoney(currentPeriodEarnings)}</p>
+                </div>
+                <span class="text-blue-500">→</span>
             </div>
-            <button onclick="handleClosePeriod()"
-                class="bg-yellow-500 text-white px-4 py-3 rounded-lg hover:bg-yellow-600 text-base">Закрыть</button>
+            <button onclick="handleClosePeriod()" class="w-full mt-3 bg-yellow-500 text-white px-4 py-3 rounded-lg hover:bg-yellow-600 text-base">Закрыть период</button>
         </div>
 
                     <!-- Календарная аналитика -->
@@ -339,6 +330,204 @@ function showAnalytics(period = 'month') {
     }
     
     renderAnalytics(startDate, endDate, period);
+}
+
+function renderAnalytics(startDate, endDate, periodName) {
+    const { transactions } = appState.data;
+    
+    // Фильтруем транзакции
+    const filtered = transactions.filter(t => {
+        const date = new Date(t.service_date);
+        return date >= startDate && date <= endDate;
+    });
+    
+    // Считаем итоги
+    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
+    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
+    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
+    
+    // Статистика по услугам
+    const serviceStats = {};
+    filtered.forEach(t => {
+        const serviceName = t.service_name || 'Без названия';
+        if (!serviceStats[serviceName]) {
+            serviceStats[serviceName] = {
+                count: 0,
+                total: 0,
+                earnings: 0
+            };
+        }
+        serviceStats[serviceName].count++;
+        serviceStats[serviceName].total += (t.final_price || t.full_price || 0);
+        serviceStats[serviceName].earnings += t.master_earnings;
+    });
+    
+    // Группировка по дням для графика
+    const dailyData = {};
+    filtered.forEach(t => {
+        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric' });
+        if (!dailyData[dateKey]) {
+            dailyData[dateKey] = {
+                count: 0,
+                amount: 0
+            };
+        }
+        dailyData[dateKey].count++;
+        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
+    });
+    
+    // График
+    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
+    const barChart = Object.entries(dailyData).map(([date, data]) => {
+        const barHeight = Math.max(10, (data.amount / maxAmount) * 150);
+        return `
+            <div class="flex flex-col items-center flex-shrink-0">
+                <div class="text-xs mb-1">${Math.round(data.amount)}</div>
+                <div class="w-10 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
+                <div class="text-xs mt-1">${date}</div>
+            </div>
+        `;
+    }).join('');
+    
+    const periodLabel = periodName === 'today' ? 'Сегодня' : 
+                        periodName === 'week' ? 'Последние 7 дней' :
+                        periodName === 'month' ? 'Текущий месяц' :
+                        periodName === 'quarter' ? 'Текущий квартал' :
+                        periodName === 'year' ? 'Текущий год' :
+                        'Произвольный период';
+    
+    const content = document.getElementById('content');
+    content.innerHTML = `
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Аналитика: ${periodLabel}</h2>
+                <button onclick="showScreen('dashboard')" class="text-blue-500 text-base">← Назад</button>
+            </div>
+            
+            <div class="text-sm text-gray-500 mb-3">
+                ${startDate.toLocaleDateString('ru-RU')} - ${endDate.toLocaleDateString('ru-RU')}
+            </div>
+            
+            <!-- Кнопки фильтров -->
+            <div class="flex space-x-2 mb-4 overflow-x-auto">
+                <button onclick="showAnalytics('today')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'today' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Сегодня</button>
+                <button onclick="showAnalytics('week')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'week' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">7 дней</button>
+                <button onclick="showAnalytics('month')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'month' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Месяц</button>
+                <button onclick="showAnalytics('quarter')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'quarter' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Квартал</button>
+                <button onclick="showAnalytics('year')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'year' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Год</button>
+                <button onclick="showCustomPeriodModal()" class="px-4 py-2 rounded-lg whitespace-nowrap bg-gray-200">📅 Свой</button>
+            </div>
+            
+            <!-- Сводка -->
+            <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Услуг оказано</p>
+                    <p class="text-xl font-semibold">${filtered.length}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Общая стоимость</p>
+                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Скидки</p>
+                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Заработок мастера</p>
+                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
+                </div>
+            </div>
+            
+            <!-- График -->
+            <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                <h3 class="font-semibold mb-3">Динамика доходов</h3>
+                ${filtered.length > 0 ? `
+                    <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 180px;">
+                        ${barChart}
+                    </div>
+                ` : '<p class="text-gray-500 text-center py-8">Нет данных за выбранный период</p>'}
+            </div>
+            
+            <!-- Статистика по услугам -->
+            <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                <h3 class="font-semibold mb-3">Популярность услуг</h3>
+                ${Object.keys(serviceStats).length > 0 ? `
+                    <div class="space-y-2">
+                        ${Object.entries(serviceStats).sort((a, b) => b[1].count - a[1].count).map(([name, stats]) => `
+                            <div class="flex justify-between items-center border-b py-2">
+                                <span class="text-sm">${name}</span>
+                                <span class="text-sm font-medium">${stats.count} шт.</span>
+                                <span class="text-sm text-green-600">${formatMoney(stats.total)}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                ` : '<p class="text-gray-500">Нет данных</p>'}
+            </div>
+            
+            <!-- Детализация -->
+            <div class="space-y-2">
+                <h3 class="font-semibold mb-2">Детализация</h3>
+                ${filtered.length > 0 ? filtered.map(t => `
+                    <div class="flex justify-between items-center border-b py-2 text-sm">
+                        <span class="flex-grow">${t.service_name}</span>
+                        <span class="mx-2">${formatMoney(t.full_price || 0)}</span>
+                        ${t.discount_percent > 0 ? `<span class="text-red-500 text-xs">-${t.discount_percent}%</span>` : ''}
+                        <span class="text-green-600 mx-2">${formatMoney(t.master_earnings)}</span>
+                    </div>
+                `).join('') : '<p class="text-gray-500">Нет транзакций</p>'}
+            </div>
+        </div>
+    `;
+    
+    appState.currentScreen = 'analytics';
+    document.getElementById('fab-add').classList.add('hidden');
+    window.scrollTo(0, 0);
+}
+
+function showCustomPeriodModal() {
+    const modal = document.getElementById('modal');
+    const modalContent = document.getElementById('modal-content');
+    
+    modalContent.innerHTML = `
+        <h3 class="text-lg font-semibold mb-4">Выберите период</h3>
+        
+        <div class="space-y-2 mb-4">
+            <button onclick="showAnalytics('today')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Сегодня</button>
+            <button onclick="showAnalytics('week')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Последние 7 дней</button>
+            <button onclick="showAnalytics('month')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий месяц</button>
+            <button onclick="showAnalytics('quarter')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий квартал</button>
+            <button onclick="showAnalytics('year')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий год</button>
+        </div>
+        
+        <div class="border-t pt-3">
+            <p class="text-sm font-medium mb-2">Произвольный период:</p>
+            <div class="space-y-2">
+                <div>
+                    <label class="block text-xs text-gray-500">С даты:</label>
+                    <input type="date" id="custom-start-date" class="w-full p-3 border border-gray-300 rounded text-base">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500">По дату:</label>
+                    <input type="date" id="custom-end-date" class="w-full p-3 border border-gray-300 rounded text-base">
+                </div>
+                <button onclick="applyCustomPeriod()" class="w-full bg-blue-500 text-white py-3 rounded-lg text-base">Применить</button>
+            </div>
+        </div>
+    `;
+    
+    modal.classList.remove('hidden');
+}
+
+function applyCustomPeriod() {
+    const startDate = document.getElementById('custom-start-date').value;
+    const endDate = document.getElementById('custom-end-date').value;
+    
+    if (startDate && endDate) {
+        closeModal();
+        renderAnalytics(new Date(startDate), new Date(endDate), 'custom');
+    } else {
+        showToast('Выберите обе даты');
+    }
 }
 
 function showCustomPeriodModal() {
@@ -868,12 +1057,17 @@ async function handleSaveVisit() {
         services: services
     };
 
+    // ВОТ ЗДЕСЬ ДОБАВЬТЕ showLoading
+    showLoading('Сохранение визита...');
+    
     try {
         await apiCall('addVisit', visitData);
         await fetchData();
+        hideLoading(); // ВОТ ЗДЕСЬ СКРЫВАЕМ
         showToast('Визит сохранен!');
         showScreen('dashboard');
     } catch (error) {
+        hideLoading(); // ВОТ ЗДЕСЬ ТОЖЕ СКРЫВАЕМ ПРИ ОШИБКЕ
         console.error('Ошибка сохранения визита:', error);
         const pending = loadPendingSync();
         pending.push(visitData);
@@ -1071,6 +1265,8 @@ async function handleCatalogSave(isEdit) {
         return;
     }
 
+    showLoading('Сохранение услуги...'); // ДОБАВЬТЕ
+    
     try {
         const action = isEdit ? 'update' : 'create';
         await apiCall('manageCatalog', {
@@ -1080,10 +1276,12 @@ async function handleCatalogSave(isEdit) {
             base_price: basePrice
         });
         await fetchData();
+        hideLoading(); // ДОБАВЬТЕ
         closeModal();
         showScreen('catalog');
         showToast(isEdit ? 'Услуга обновлена' : 'Услуга добавлена');
     } catch (e) {
+        hideLoading(); // ДОБАВЬТЕ
         showToast('Ошибка: ' + e.message);
     }
 }
@@ -1223,35 +1421,60 @@ function renderPeriodDetail(periodId) {
     </div>
     `;
 }
+function showLoading(message = 'Загрузка...') {
+    const loadingOverlay = document.createElement('div');
+    loadingOverlay.id = 'loading-overlay';
+    loadingOverlay.style.cssText = `
+        position: fixed;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: rgba(0,0,0,0.5);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 100;
+    `;
+    loadingOverlay.innerHTML = `
+        <div class="bg-white rounded-lg p-4 text-center">
+            <div class="spinner"></div>
+            <p class="mt-2 text-sm">${message}</p>
+        </div>
+    `;
+    document.body.appendChild(loadingOverlay);
+}
 
+function hideLoading() {
+    const loadingOverlay = document.getElementById('loading-overlay');
+    if (loadingOverlay) {
+        loadingOverlay.remove();
+    }
+}
 function showPayoutModal(periodId, remainingDebt) {
     const modal = document.getElementById('modal');
     const modalContent = document.getElementById('modal-content');
     modalContent.innerHTML = `
-    <h3 class="text-lg font-semibold mb-4">Внести оплату</h3>
-    <p class="mb-3">Остаток долга: <span class="font-bold">${formatMoney(remainingDebt)}</span></p>
-
-    <button onclick="handleFullPayout('${periodId}', ${remainingDebt})"
-        class="w-full bg-green-500 text-white py-3 rounded-lg mb-2 text-base">
-        Погасить полностью
-    </button>
-
-    <div class="flex space-x-2 mb-2">
-        <input type="number" id="manual-amount" placeholder="Сумма"
-            class="flex-grow p-3 border border-gray-300 rounded text-base">
-        <button onclick="handleManualPayout('${periodId}')"
-            class="bg-blue-500 text-white px-4 py-3 rounded-lg text-base">Внести</button>
-    </div>
-
-    <div class="mb-3">
-        <label class="block text-sm text-gray-600 mb-1">Комментарий</label>
-        <input type="text" id="payout-comment" placeholder="Например: наличные из кассы"
-            class="w-full p-3 border border-gray-300 rounded text-base">
-    </div>
+        <h3 class="text-lg font-semibold mb-4">Внести оплату</h3>
+        <p class="mb-3">Остаток долга: <span class="font-bold">${formatMoney(remainingDebt)}</span></p>
+        
+        <button onclick="handleFullPayout('${periodId}', ${remainingDebt})" class="w-full bg-green-500 text-white py-3 rounded-lg mb-3 text-base">
+            Погасить полностью
+        </button>
+        
+        <div class="mb-3">
+            <label class="block text-sm text-gray-600 mb-1">Сумма частичной оплаты</label>
+            <input type="number" id="manual-amount" placeholder="Введите сумму" class="w-full p-3 border border-gray-300 rounded text-base mb-2">
+            <button onclick="handleManualPayout('${periodId}')" class="w-full bg-blue-500 text-white py-3 rounded-lg text-base">Внести</button>
+        </div>
+        
+        <div class="mb-3">
+            <label class="block text-sm text-gray-600 mb-1">Комментарий</label>
+            <input type="text" id="payout-comment" placeholder="Например: наличные из кассы" class="w-full p-3 border border-gray-300 rounded text-base">
+        </div>
     `;
     modal.classList.remove('hidden');
 }
-
 async function handleFullPayout(periodId, amount) {
     const comment = document.getElementById('payout-comment')?.value || '';
     await handlePayout(periodId, amount, comment);
@@ -1268,17 +1491,21 @@ async function handleManualPayout(periodId) {
 }
 
 async function handlePayout(periodId, amount, comment = '') {
+    showLoading('Сохранение оплаты...'); // ДОБАВЬТЕ
+    
     try {
-        await apiCall('addPayout', {
-            period_id: periodId,
+        await apiCall('addPayout', { 
+            period_id: periodId, 
             amount: amount,
-            comment: comment
+            comment: comment 
         });
         await fetchData();
+        hideLoading(); // ДОБАВЬТЕ
         closeModal();
         showScreen('periodDetail', { periodId: periodId });
         showToast('Оплата внесена');
     } catch (e) {
+        hideLoading(); // ДОБАВЬТЕ
         showToast('Ошибка: ' + e.message);
     }
 }
@@ -1412,57 +1639,6 @@ function getCurrentDateTimeLocal() {
     return `${year}-${month}-${day}T${hours}:${minutes}`;
 }
 
-function showAnalytics(period) {
-    const { transactions } = appState.data;
-    const now = new Date();
-    let startDate;
-
-    if (period === 'today') {
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    } else if (period === 'month') {
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    } else if (period === 'year') {
-        startDate = new Date(now.getFullYear(), 0, 1);
-    }
-
-    const filtered = transactions.filter(t => new Date(t.service_date) >= startDate);
-    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
-    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount || 0), 0);
-    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
-
-    const content = document.getElementById('content');
-    content.innerHTML = `
-    <div class="bg-white rounded-lg shadow p-4">
-        <div class="flex justify-between items-center mb-4">
-            <h2 class="text-xl font-semibold">Аналитика: ${period === 'today' ? 'Сегодня' : period === 'month' ? 'За месяц' : 'За год'}</h2>
-            <button onclick="showScreen('dashboard')" class="text-blue-500">← Назад</button>
-        </div>
-
-        <div class="space-y-2 text-base mb-4">
-            <p>Услуг оказано: <span class="font-medium">${filtered.length}</span></p>
-            <p>Общая стоимость: <span class="font-medium">${formatMoney(totalServices)}</span></p>
-            ${totalDiscount > 0 ? `<p>Скидки: <span class="text-red-500">-${formatMoney(totalDiscount)}</span></p>` : ''}
-            <p>Заработок: <span class="font-medium text-green-600">${formatMoney(totalEarnings)}</span></p>
-        </div>
-
-        <h3 class="font-semibold mb-2">Детализация</h3>
-        <div class="space-y-2">
-            ${filtered.map(t => `
-            <div class="flex justify-between items-center border-b py-2 text-sm">
-                <span>${t.service_name}</span>
-                <span>${formatMoney(t.full_price || 0)}</span>
-                ${t.discount > 0 ? `<span class="text-red-500">-${formatMoney(t.discount)}</span>` : ''}
-                <span class="text-green-600">${formatMoney(t.master_earnings)}</span>
-            </div>
-            `).join('')}
-        </div>
-    </div>
-    `;
-
-    appState.currentScreen = 'analytics';
-    document.getElementById('fab-add').classList.add('hidden');
-}
-
 function editTransaction(transactionId) {
     const { transactions, servicesCatalog } = appState.data;
     const transaction = transactions.find(t => t.id === transactionId);
@@ -1513,24 +1689,28 @@ function editTransaction(transactionId) {
 async function saveTransactionEdit(transactionId) {
     const serviceName = document.getElementById('edit-transaction-service').value;
     const fullPrice = parseFloat(document.getElementById('edit-transaction-price').value) || 0;
-    const discount = parseFloat(document.getElementById('edit-transaction-discount').value) || 0;
+    const discountPercent = parseFloat(document.getElementById('edit-transaction-discount').value) || 0;
     const masterPercent = parseFloat(document.getElementById('edit-transaction-percent').value) || 50;
-
+    
+    showLoading('Обновление услуги...'); // ДОБАВЬТЕ
+    
     try {
         await apiCall('updateTransaction', {
             transaction_id: transactionId,
             updates: {
                 service_name: serviceName,
                 full_price: fullPrice,
-                discount: discount,
+                discount_percent: discountPercent,
                 master_percent: masterPercent
             }
         });
         await fetchData();
+        hideLoading(); // ДОБАВЬТЕ
         closeModal();
         showScreen('periodDetail', { periodId: 'CURRENT' });
         showToast('Транзакция обновлена');
     } catch (e) {
+        hideLoading(); // ДОБАВЬТЕ
         showToast('Ошибка: ' + e.message);
     }
 }
@@ -1648,6 +1828,8 @@ window.showAnalytics = showAnalytics;
 window.editTransaction = editTransaction;
 window.saveTransactionEdit = saveTransactionEdit;
 window.deleteTransaction = deleteTransaction;
+window.showLoading = showLoading;
+window.hideLoading = hideLoading;
 window.showAnalytics = showAnalytics;
 window.showCustomPeriodModal = showCustomPeriodModal;
 window.applyCustomPeriod = applyCustomPeriod;
