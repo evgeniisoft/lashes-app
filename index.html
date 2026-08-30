@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>Учет доходов мастера</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="style.css">
+    <meta name="theme-color" content="#f8fafc">
+    <link rel="manifest" href="manifest.json">
+    <link rel="apple-touch-icon" href="icon-192.png">
+</head>
+<body class="bg-gray-100 text-gray-900 pb-24">
+
+    <!-- Контент будет динамически отображаться здесь -->
+    <div id="app" class="max-w-md mx-auto mt-4 px-4">
+        <h1 class="text-2xl font-bold text-center mb-4">Мои доходы</h1>
+        <div id="loading" class="text-center mt-10">
+            <div class="spinner"></div>
+            <p>Загрузка данных...</p>
+        </div>
+        <div id="content" class="hidden">
+            <!-- Здесь будут экраны -->
+        </div>
+    </div>
+
+    <!-- Фиксированная кнопка добавления -->
+    <button id="fab-add" class="fab hidden">+</button>
+
+    <!-- Модальное окно -->
+    <div id="modal" class="modal-overlay hidden">
+        <div class="modal-box">
+            <div id="modal-content" class="p-4"></div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
