@@ -1336,30 +1336,38 @@ async function handleDeleteService(serviceId) {
 async function saveSettings() {
     const newPercent = parseInt(document.getElementById('default-percent').value);
     if (newPercent > 0 && newPercent <= 100) {
+        showLoading('Сохранение настроек...');
+        
         try {
             await apiCall('manageCatalog', {
                 catalog_action: 'update_settings',
                 default_percent: newPercent
             });
+            
             appState.data.settings.DEFAULT_PERCENT = newPercent;
+            hideLoading();
             showToast('Настройки сохранены');
             showScreen('catalog');
         } catch (e) {
+            hideLoading();
             showToast('Ошибка: ' + e.message);
         }
     } else {
         showToast('Процент должен быть от 1 до 100');
     }
 }
-
 async function handleRevertLastAction() {
     if (confirm('Отменить последнее действие? Это может повлиять на данные.')) {
+        showLoading('Отмена действия...');
+        
         try {
             const result = await apiCall('revertLastAction');
             await fetchData();
+            hideLoading();
             showToast(result.message || 'Действие отменено');
             showScreen('catalog');
         } catch (e) {
+            hideLoading();
             showToast('Ошибка: ' + e.message);
         }
     }
@@ -1851,12 +1859,16 @@ function showToast(message) {
 // ===================== ОБРАБОТЧИКИ =====================
 async function handleClosePeriod() {
     if (confirm('Закрыть текущий период? Все накопленные средства будут зафиксированы.')) {
+        showLoading('Закрытие периода...');
+        
         try {
             await apiCall('closeCurrentPeriod');
             await fetchData();
+            hideLoading();
             showScreen('history');
             showToast('Период закрыт');
         } catch (e) {
+            hideLoading();
             showToast('Ошибка: ' + e.message);
         }
     }
