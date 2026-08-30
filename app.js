@@ -313,7 +313,8 @@ function renderDashboard() {
 function showAnalytics(period = 'month') {
     const { transactions } = appState.data;
     const now = new Date();
-    let startDate, endDate = now;
+    let startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    let endDate = now;
     
     if (period === 'today') {
         startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -333,12 +334,179 @@ function showAnalytics(period = 'month') {
         startDate = new Date(now.getFullYear(), 0, 1);
         endDate = now;
     } else if (period === 'custom') {
-        // Показываем модальное окно для выбора периода
         showCustomPeriodModal();
         return;
     }
     
     renderAnalytics(startDate, endDate, period);
+}
+
+function showCustomPeriodModal() {
+    const modal = document.getElementById('modal');
+    const modalContent = document.getElementById('modal-content');
+    
+    modalContent.innerHTML = `
+        <h3 class="text-lg font-semibold mb-4">Выберите период</h3>
+        
+        <div class="space-y-2 mb-4">
+            <button onclick="showAnalytics('today')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Сегодня</button>
+            <button onclick="showAnalytics('week')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Последние 7 дней</button>
+            <button onclick="showAnalytics('month')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий месяц</button>
+            <button onclick="showAnalytics('quarter')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий квартал</button>
+            <button onclick="showAnalytics('year')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий год</button>
+        </div>
+        
+        <div class="border-t pt-3">
+            <p class="text-sm font-medium mb-2">Произвольный период:</p>
+            <div class="space-y-2">
+                <div>
+                    <label class="block text-xs text-gray-500">С даты:</label>
+                    <input type="date" id="custom-start-date" class="w-full p-3 border border-gray-300 rounded text-base">
+                </div>
+                <div>
+                    <label class="block text-xs text-gray-500">По дату:</label>
+                    <input type="date" id="custom-end-date" class="w-full p-3 border border-gray-300 rounded text-base">
+                </div>
+                <button onclick="applyCustomPeriod()" class="w-full bg-blue-500 text-white py-3 rounded-lg text-base">Применить</button>
+            </div>
+        </div>
+    `;
+    
+    modal.classList.remove('hidden');
+}
+
+function applyCustomPeriod() {
+    const startDate = document.getElementById('custom-start-date').value;
+    const endDate = document.getElementById('custom-end-date').value;
+    
+    if (startDate && endDate) {
+        closeModal();
+        renderAnalytics(new Date(startDate), new Date(endDate), 'custom');
+    } else {
+        showToast('Выберите обе даты');
+    }
+}
+
+function renderAnalytics(startDate, endDate, periodName) {
+    const { transactions } = appState.data;
+    
+    // Фильтруем транзакции
+    const filtered = transactions.filter(t => {
+        const date = new Date(t.service_date);
+        return date >= startDate && date <= endDate;
+    });
+    
+    // Считаем итоги
+    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
+    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
+    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
+    
+    // Группировка по дням для графика
+    const dailyData = {};
+    filtered.forEach(t => {
+        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric' });
+        if (!dailyData[dateKey]) {
+            dailyData[dateKey] = {
+                services: 0,
+                amount: 0,
+                earnings: 0
+            };
+        }
+        dailyData[dateKey].services++;
+        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
+        dailyData[dateKey].earnings += t.master_earnings;
+    });
+    
+    // Создаем график
+    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
+    const barChart = Object.entries(dailyData).map(([date, data]) => {
+        const barHeight = Math.max(10, (data.amount / maxAmount) * 150);
+        return `
+            <div class="flex flex-col items-center flex-shrink-0">
+                <div class="text-xs mb-1">${Math.round(data.amount)}</div>
+                <div class="w-12 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
+                <div class="text-xs mt-1">${date}</div>
+            </div>
+        `;
+    }).join('');
+    
+    const periodLabel = periodName === 'today' ? 'Сегодня' : 
+                        periodName === 'week' ? 'Последние 7 дней' :
+                        periodName === 'month' ? 'Текущий месяц' :
+                        periodName === 'quarter' ? 'Текущий квартал' :
+                        periodName === 'year' ? 'Текущий год' :
+                        'Произвольный период';
+    
+    const content = document.getElementById('content');
+    content.innerHTML = `
+        <div class="bg-white rounded-lg shadow p-4">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-semibold">Аналитика: ${periodLabel}</h2>
+                <button onclick="showScreen('dashboard')" class="text-blue-500 text-base">← Назад</button>
+            </div>
+            
+            <div class="text-sm text-gray-500 mb-3">
+                ${startDate.toLocaleDateString('ru-RU')} - ${endDate.toLocaleDateString('ru-RU')}
+            </div>
+            
+            <!-- Кнопки фильтров -->
+            <div class="flex space-x-2 mb-4 overflow-x-auto">
+                <button onclick="showAnalytics('today')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'today' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Сегодня</button>
+                <button onclick="showAnalytics('week')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'week' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">7 дней</button>
+                <button onclick="showAnalytics('month')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'month' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Месяц</button>
+                <button onclick="showAnalytics('quarter')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'quarter' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Квартал</button>
+                <button onclick="showAnalytics('year')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'year' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Год</button>
+                <button onclick="showCustomPeriodModal()" class="px-4 py-2 rounded-lg whitespace-nowrap bg-gray-200">📅 Свой</button>
+            </div>
+            
+            <!-- Сводка -->
+            <div class="grid grid-cols-2 gap-3 mb-4">
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Услуг оказано</p>
+                    <p class="text-xl font-semibold">${filtered.length}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Общая стоимость</p>
+                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Скидки</p>
+                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
+                </div>
+                <div class="bg-gray-50 rounded-lg p-3">
+                    <p class="text-xs text-gray-500">Заработок мастера</p>
+                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
+                </div>
+            </div>
+            
+            <!-- График -->
+            <div class="bg-gray-50 rounded-lg p-4 mb-4">
+                <h3 class="font-semibold mb-3">Динамика доходов</h3>
+                ${filtered.length > 0 ? `
+                    <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 180px;">
+                        ${barChart}
+                    </div>
+                ` : '<p class="text-gray-500 text-center py-8">Нет данных за выбранный период</p>'}
+            </div>
+            
+            <!-- Детализация -->
+            <div class="space-y-2">
+                <h3 class="font-semibold mb-2">Детализация</h3>
+                ${filtered.length > 0 ? filtered.map(t => `
+                    <div class="flex justify-between items-center border-b py-2 text-sm">
+                        <span class="flex-grow">${t.service_name}</span>
+                        <span class="mx-2">${formatMoney(t.full_price || 0)}</span>
+                        ${t.discount_percent > 0 ? `<span class="text-red-500 text-xs">-${t.discount_percent}%</span>` : ''}
+                        <span class="text-green-600 mx-2">${formatMoney(t.master_earnings)}</span>
+                    </div>
+                `).join('') : '<p class="text-gray-500">Нет транзакций</p>'}
+            </div>
+        </div>
+    `;
+    
+    appState.currentScreen = 'analytics';
+    document.getElementById('fab-add').classList.add('hidden');
+    window.scrollTo(0, 0);
 }
 
 function showCustomPeriodModal() {
