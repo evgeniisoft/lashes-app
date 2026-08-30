@@ -1,6 +1,6 @@
 // ===================== КОНФИГУРАЦИЯ И СОСТОЯНИЕ =====================
-const API_URL = 'ВАШ_РАЗВЕРНУТЫЙ_URL_ИЗ_GAS'; // <-- ЗАМЕНИТЕ НА ВАШ URL
-const AUTH_TOKEN = 'my_secret_token_2026'; // <-- ТОТ ЖЕ ТОКЕН, ЧТО И В GAS
+const API_URL = 'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJD84CfxkirrKPtkDq7gfFcPd3S1nUsg2D-k6YT6i0BNxG-g/exec'; // <-- ЗАМЕНИТЕ НА ВАШ URL
+const AUTH_TOKEN = 'irina2026'; // <-- ТОТ ЖЕ ТОКЕН, ЧТО И В GAS
 
 let appState = {
     data: {
