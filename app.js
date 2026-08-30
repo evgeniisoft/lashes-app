@@ -152,12 +152,13 @@ function showScreen(screenName, params = {}) {
     else if (screenName === 'periodDetail') renderPeriodDetail(params.periodId);
     else if (screenName === 'initialSetup') renderInitialSetup();
     
-    // Управление кнопкой FAB
     const fab = document.getElementById('fab-add');
-    if (screenName === 'dashboard') {
-        fab.classList.remove('hidden');
-    } else {
-        fab.classList.add('hidden');
+    if (fab) {
+        if (screenName === 'dashboard') {
+            fab.classList.remove('hidden');
+        } else {
+            fab.classList.add('hidden');
+        }
     }
     
     window.scrollTo(0, 0);
@@ -584,7 +585,7 @@ function renderCatalog() {
                 </div>
             </div>
 
-            <div class="bg-white rounded-lg shadow p-4">
+                       <div class="bg-white rounded-lg shadow p-4">
                 <h2 class="text-xl font-semibold mb-4">Управление услугами</h2>
                 <div class="space-y-2">
                     ${safeCatalog.map(s => `
@@ -604,6 +605,15 @@ function renderCatalog() {
                 </div>
                 <button onclick="showCatalogEditModal()" class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 mt-4 text-base">
                     + Добавить услугу
+                </button>
+            </div>
+
+            <!-- НОВЫЙ БЛОК: Системные операции -->
+            <div class="bg-white rounded-lg shadow p-4">
+                <h2 class="text-xl font-semibold mb-4">Системные операции</h2>
+                <p class="text-sm text-gray-500 mb-3">Осторожно! Эти действия могут повлиять на данные.</p>
+                <button onclick="handleRevertLastAction()" class="w-full bg-red-500 text-white py-3 rounded-lg hover:bg-red-600 text-base">
+                    ↩️ Отменить последнее действие
                 </button>
             </div>
         </div>
@@ -692,6 +702,19 @@ async function saveSettings() {
         }
     } else {
         showToast('Процент должен быть от 1 до 100');
+    }
+}
+
+async function handleRevertLastAction() {
+    if (confirm('Отменить последнее действие? Это может повлиять на данные.')) {
+        try {
+            const result = await apiCall('revertLastAction');
+            await fetchData();
+            showToast(result.message || 'Действие отменено');
+            showScreen('catalog');
+        } catch (e) {
+            showToast('Ошибка: ' + e.message);
+        }
     }
 }
 
@@ -1034,6 +1057,7 @@ window.showCatalogEditModal = showCatalogEditModal;
 window.handleCatalogSave = handleCatalogSave;
 window.handleDeleteService = handleDeleteService;
 window.saveSettings = saveSettings;
+window.handleRevertLastAction = handleRevertLastAction;
 
 document.addEventListener('DOMContentLoaded', initApp);
 
