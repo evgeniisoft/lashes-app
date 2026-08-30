@@ -1,34 +1,21 @@
-const CACHE_NAME = 'lashes-app-v1';
-const urlsToCache = [
-  './',
-  './index.html',
-  './style.css',
-  './app.js',
-  './manifest.json',
-  './icon-192.png',
-  './icon-512.png'
-];
+const CACHE_NAME = 'lashes-app-v2'; // Увеличьте версию!
 
 self.addEventListener('install', event => {
+  self.skipWaiting(); // Немедленно активировать
   event.waitUntil(
-    caches.open(CACHE_NAME)
-      .then(cache => cache.addAll(urlsToCache))
+    caches.open(CACHE_NAME).then(cache => {
+      return cache.addAll([
+        './',
+        './index.html',
+        './style.css',
+        './app.js',
+        './manifest.json'
+      ]);
+    })
   );
-});
-
-self.addEventListener('fetch', event => {
-  event.respondWith(
-    caches.match(event.request)
-      .then(response => response || fetch(event.request))
-  );
-});
-// Автоматическое обновление
-self.addEventListener('install', event => {
-  self.skipWaiting(); // Немедленно активировать новый SW
 });
 
 self.addEventListener('activate', event => {
-  // Удаляем старый кэш
   event.waitUntil(
     caches.keys().then(cacheNames => {
       return Promise.all(
@@ -40,9 +27,10 @@ self.addEventListener('activate', event => {
       );
     })
   );
+  return self.clients.claim();
 });
 
-// Стратегия: сначала сеть, потом кэш
+// Стратегия: СНАЧАЛА СЕТЬ, ПОТОМ КЭШ (для быстрых обновлений)
 self.addEventListener('fetch', event => {
   event.respondWith(
     fetch(event.request)
