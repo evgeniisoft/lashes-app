@@ -1,5 +1,5 @@
 // Проверка версии приложения
-const APP_VERSION = '2.0.0';
+const APP_VERSION = '2.0.1';
 
 // При загрузке проверяем версию
 window.addEventListener('load', () => {
@@ -272,7 +272,7 @@ function renderDashboard() {
                 📅
             </button>
             <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">
-                💰
+                📋
             </button>
             <button onclick="showScreen('catalog')" class="py-3 text-gray-600 hover:text-blue-600">
                 ⚙️
@@ -1163,7 +1163,7 @@ function renderPriceList() {
             <button onclick="showScreen('dashboard')" class="py-3 text-gray-600 hover:text-blue-600">📊</button>
             <button onclick="showScreen('history')" class="py-3 text-gray-600 hover:text-blue-600">📅</button>
             <button onclick="showScreen('pricelist')"
-                class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">💰</button>
+                class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">📋</button>
             <button onclick="showScreen('catalog')" class="py-3 text-gray-600 hover:text-blue-600">⚙️</button>
         </div>
     </div>
@@ -1201,7 +1201,7 @@ function renderCatalog() {
         <div class="grid grid-cols-4 text-center text-sm">
             <button onclick="showScreen('dashboard')" class="py-3 text-gray-600 hover:text-blue-600">📊</button>
             <button onclick="showScreen('history')" class="py-3 text-gray-600 hover:text-blue-600">📅</button>
-            <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">💰</button>
+            <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">📋</button>
             <button onclick="showScreen('catalog')"
                 class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">⚙️</button>
         </div>
