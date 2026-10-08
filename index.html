@@ -56,13 +56,19 @@
   <div id="screen-home" class="screen">
     
     <div class="header">
-      <div class="sync-indicator" id="sync-indicator">
+      <div class="sync-indicator" id="sync-indicator" onclick="App.showDataStatus()">
         <div class="sync-dot"></div>
         <span id="sync-text">Синхронизация</span>
       </div>
-      <button class="icon-btn" onclick="App.go('settings')">
-        <i data-lucide="settings"></i>
-      </button>
+      <div style="display: flex; gap: 4px; align-items: center;">
+        <button class="icon-btn alert-bell hidden" id="alert-bell" onclick="Alerts.showPanel()">
+          <i data-lucide="bell"></i>
+          <span class="alert-badge" id="alert-badge">0</span>
+        </button>
+        <button class="icon-btn" onclick="App.go('settings')">
+          <i data-lucide="settings"></i>
+        </button>
+      </div>
     </div>
     
     <div class="card">
