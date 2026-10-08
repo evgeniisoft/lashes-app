@@ -1,44 +1,404 @@
 <!DOCTYPE html>
 <html lang="ru">
 <head>
-    <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
-    <meta http-equiv="Pragma" content="no-cache">
-    <meta http-equiv="Expires" content="0">
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Учет доходов мастера</title>
-    <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <link rel="stylesheet" href="style.css">
-    <meta name="theme-color" content="#f8fafc">
-    <link rel="manifest" href="manifest.json">
-    <link rel="apple-touch-icon" href="icon-192.png">
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#ffffff">
+<title>Учет доходов мастера</title>
+
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-192.png">
+<link rel="icon" href="icon-192.png">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
 </head>
-<body class="bg-gray-100 text-gray-900 pb-24">
+<body>
 
-    <!-- Контент будет динамически отображаться здесь -->
-    <div id="app" class="max-w-md mx-auto mt-4 px-4">
-        <h1 class="text-2xl font-bold text-center mb-4">Мои доходы</h1>
-        <div id="loading" class="text-center mt-10">
-            <div class="spinner"></div>
-            <p>Загрузка данных...</p>
-        </div>
-        <div id="content" class="hidden">
-            <!-- Здесь будут экраны -->
-        </div>
+<div class="app" id="app">
+  
+  <!-- ==================== ЗАГРУЗКА ==================== -->
+  <div id="screen-loading" class="screen active screen-center">
+    <div class="spinner-large"></div>
+  </div>
+  
+  <!-- ==================== АВТОРИЗАЦИЯ ==================== -->
+  <div id="screen-auth" class="screen screen-center">
+    <div class="auth-card">
+      <div class="auth-logo">
+        <i data-lucide="sparkles" style="width: 40px; height: 40px;"></i>
+      </div>
+      <h1 class="auth-title">Учет доходов мастера</h1>
+      <p class="auth-subtitle">Введите токен для доступа</p>
+      
+      <input 
+        type="password" 
+        id="auth-token" 
+        class="input" 
+        placeholder="Токен"
+        autocomplete="off"
+        style="text-align: center; margin-bottom: 12px;"
+      >
+      
+      <button class="btn btn-primary" id="btn-auth">
+        <span>Подключиться</span>
+      </button>
+      
+      <p class="auth-hint">Токен можно получить у администратора</p>
     </div>
-
-    <!-- Фиксированная кнопка добавления -->
-    <button id="fab-add" class="fab hidden" onclick="showScreen('addVisit')">+</button>
-
-    <!-- Модальное окно -->
-<div id="modal" class="modal-overlay hidden" onclick="if(event.target === this) closeModal()">
-    <div class="modal-box relative">
-        <button onclick="closeModal()" class="absolute top-2 right-2 text-gray-500 hover:text-gray-700 text-3xl leading-none p-2 z-10">×</button>
-        <div id="modal-content" class="p-4"></div>
+  </div>
+  
+  <!-- ==================== ГЛАВНЫЙ ==================== -->
+  <div id="screen-home" class="screen">
+    
+    <div class="header">
+      <div class="sync-indicator" id="sync-indicator">
+        <div class="sync-dot"></div>
+        <span id="sync-text">Синхронизация</span>
+      </div>
+      <button class="icon-btn" onclick="App.go('settings')">
+        <i data-lucide="settings"></i>
+      </button>
     </div>
+    
+    <div class="card">
+      <div class="debt-label">Всего должны</div>
+      <div class="debt-amount" id="total-debt">— ₽</div>
+      
+      <div class="salon-list" id="salon-list"></div>
+    </div>
+    
+    <button class="btn btn-primary" onclick="App.go('add-visit')">
+      <i data-lucide="plus"></i>
+      <span>Добавить визит</span>
+    </button>
+    
+    <button class="btn btn-secondary" onclick="App.go('payout')">
+      <i data-lucide="banknote"></i>
+      <span>Получила деньги</span>
+    </button>
+    
+    <div class="section-title">Последние операции</div>
+    <div id="recent-ops"></div>
+    
+  </div>
+  
+  <!-- ==================== ДОБАВИТЬ ВИЗИТ ==================== -->
+  <div id="screen-add-visit" class="screen">
+    
+    <div class="header">
+      <div class="header-back">
+        <button class="icon-btn" onclick="App.go('home')">
+          <i data-lucide="arrow-left"></i>
+        </button>
+        <div class="header-info">
+          <div class="header-name">Новый визит</div>
+          <div class="header-subtitle" id="add-visit-salon">Сота</div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="input-group">
+      <label class="input-label">Дата и время</label>
+      <input type="datetime-local" id="visit-date" class="input">
+    </div>
+    
+    <div class="section-title">Услуги</div>
+    <div id="visit-services"></div>
+    
+    <button class="btn btn-secondary" onclick="App.openServicePicker()">
+      <i data-lucide="plus"></i>
+      <span>Добавить услугу</span>
+    </button>
+    
+    <div class="total-block">
+      <div class="total-row">
+        <span class="total-row-label">Стоимость</span>
+        <span class="total-row-value" id="visit-total">0 ₽</span>
+      </div>
+      <div class="total-row">
+        <span class="total-row-label">Мастеру</span>
+        <span class="total-row-value income" id="visit-earnings">0 ₽</span>
+      </div>
+    </div>
+    
+    <button class="btn btn-primary" id="btn-save-visit">
+      <i data-lucide="check"></i>
+      <span>Сохранить визит</span>
+    </button>
+    
+  </div>
+  
+  <!-- ==================== ПОЛУЧИЛА ДЕНЬГИ ==================== -->
+  <div id="screen-payout" class="screen">
+    
+    <div class="header">
+      <div class="header-back">
+        <button class="icon-btn" onclick="App.go('home')">
+          <i data-lucide="arrow-left"></i>
+        </button>
+        <div class="header-info">
+          <div class="header-name">Получила деньги</div>
+          <div class="header-subtitle" id="payout-salon">Сота</div>
+        </div>
+      </div>
+    </div>
+    
+    <div class="card" style="text-align: center; padding: 16px;">
+      <div class="debt-label">Салон должен</div>
+      <div style="font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums;" id="payout-debt">— ₽</div>
+    </div>
+    
+    <div class="input-group">
+      <label class="input-label">Сколько получила</label>
+      <input type="text" inputmode="numeric" id="payout-amount" class="input input-amount" placeholder="0">
+    </div>
+    
+    <div class="quick-amounts" id="quick-amounts"></div>
+    
+    <div class="input-group" style="margin-top: 16px;">
+      <label class="input-label">Комментарий (необязательно)</label>
+      <input type="text" id="payout-comment" class="input" placeholder="наличными">
+    </div>
+    
+    <button class="btn btn-success" id="btn-save-payout">
+      <i data-lucide="check"></i>
+      <span>Подтвердить</span>
+    </button>
+    
+  </div>
+  
+  <!-- ==================== ЖУРНАЛ ==================== -->
+  <div id="screen-journal" class="screen">
+    
+    <div class="header">
+      <div class="header-name">Журнал</div>
+    </div>
+    
+    <div class="filters-row">
+      <select id="journal-salon-filter" class="select">
+        <option value="all">Все салоны</option>
+      </select>
+      <select id="journal-type-filter" class="select">
+        <option value="all">Все</option>
+        <option value="visit">Визиты</option>
+        <option value="payout">Выплаты</option>
+      </select>
+    </div>
+    
+    <div id="journal-list"></div>
+    
+    <button class="btn btn-secondary" id="btn-load-more" style="display: none;">
+      Показать ещё
+    </button>
+    
+  </div>
+  
+  <!-- ==================== ОТЧЁТЫ ==================== -->
+  <div id="screen-reports" class="screen">
+    
+    <div class="header">
+      <div class="header-name">Отчёты</div>
+    </div>
+    
+    <div class="filters-row">
+      <select id="reports-salon-filter" class="select">
+        <option value="all">Все салоны</option>
+      </select>
+    </div>
+    
+    <div class="tabs" id="reports-tabs">
+      <button class="tab" data-period="today">Сегодня</button>
+      <button class="tab" data-period="week">Неделя</button>
+      <button class="tab active" data-period="month">Месяц</button>
+      <button class="tab" data-period="year">Год</button>
+    </div>
+    
+    <div class="card" id="reports-summary"></div>
+    
+    <div class="section-title">По салонам</div>
+    <div id="reports-by-salon"></div>
+    
+    <div class="section-title">Топ услуг</div>
+    <div class="card" id="reports-top-services"></div>
+    
+  </div>
+  
+  <!-- ==================== НАСТРОЙКИ ==================== -->
+  <div id="screen-settings" class="screen">
+    
+    <div class="header">
+      <div class="header-back">
+        <button class="icon-btn" onclick="App.go('home')">
+          <i data-lucide="arrow-left"></i>
+        </button>
+        <div class="header-name">Ещё</div>
+      </div>
+    </div>
+    
+    <div class="settings-row" onclick="App.showProfile()">
+      <div class="settings-icon"><i data-lucide="user"></i></div>
+      <div class="settings-content">
+        <div class="settings-title" id="settings-name">Мастер</div>
+        <div class="settings-subtitle">Профиль</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row" onclick="App.go('salons')">
+      <div class="settings-icon"><i data-lucide="building-2"></i></div>
+      <div class="settings-content">
+        <div class="settings-title">Салоны</div>
+        <div class="settings-subtitle" id="settings-salons-count">0 из 3</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row" onclick="App.showServicesManage()">
+      <div class="settings-icon"><i data-lucide="sparkles"></i></div>
+      <div class="settings-content">
+        <div class="settings-title">Прайс-лист</div>
+        <div class="settings-subtitle">Услуги и цены</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row" onclick="App.showDataStatus()">
+      <div class="settings-icon"><i data-lucide="refresh-cw"></i></div>
+      <div class="settings-content">
+        <div class="settings-title">Данные</div>
+        <div class="settings-subtitle" id="settings-sync">Синхронизация: только что</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row" onclick="App.logout()">
+      <div class="settings-icon" style="color: var(--danger);">
+        <i data-lucide="log-out"></i>
+      </div>
+      <div class="settings-content">
+        <div class="settings-title" style="color: var(--danger);">Выйти</div>
+      </div>
+    </div>
+    
+  </div>
+  
+  <!-- ==================== САЛОНЫ ==================== -->
+  <div id="screen-salons" class="screen">
+    
+    <div class="header">
+      <div class="header-back">
+        <button class="icon-btn" onclick="App.go('settings')">
+          <i data-lucide="arrow-left"></i>
+        </button>
+        <div class="header-name">Салоны</div>
+      </div>
+    </div>
+    
+    <div id="salons-list"></div>
+    
+    <button class="btn btn-secondary" id="btn-add-salon">
+      <i data-lucide="plus"></i>
+      <span>Добавить салон</span>
+    </button>
+    
+  </div>
+  
+  <!-- ==================== РЕДАКТИРОВАНИЕ САЛОНА ==================== -->
+  <div id="screen-salon-edit" class="screen">
+    
+    <div class="header">
+      <div class="header-back">
+        <button class="icon-btn" onclick="App.go('salons')">
+          <i data-lucide="arrow-left"></i>
+        </button>
+        <div class="header-name" id="salon-edit-title">Новый салон</div>
+      </div>
+    </div>
+    
+    <div class="input-group">
+      <label class="input-label">Название</label>
+      <input type="text" id="salon-edit-name" class="input" placeholder="Название салона">
+    </div>
+    
+    <div class="input-group">
+      <label class="input-label">Процент мастера</label>
+      <input type="number" id="salon-edit-percent" class="input" placeholder="50" min="1" max="100">
+    </div>
+    
+    <div class="section-title">Прайс-лист</div>
+    <div id="salon-services-list"></div>
+    
+    <button class="btn btn-secondary" onclick="App.openServicePickerForSalon()">
+      <i data-lucide="plus"></i>
+      <span>Добавить услугу</span>
+    </button>
+    
+    <button class="btn btn-primary" id="btn-save-salon">
+      <i data-lucide="check"></i>
+      <span>Сохранить</span>
+    </button>
+    
+    <button class="btn btn-danger" id="btn-delete-salon" style="display: none;">
+      <i data-lucide="trash-2"></i>
+      <span>Удалить салон</span>
+    </button>
+    
+  </div>
+  
+  <!-- ==================== ВЫБОР УСЛУГ ==================== -->
+  <div id="screen-service-picker" class="screen">
+    
+    <div class="header">
+      <div class="header-back">
+        <button class="icon-btn" id="service-picker-back">
+          <i data-lucide="arrow-left"></i>
+        </button>
+        <div class="header-name" id="service-picker-title">Выберите услугу</div>
+      </div>
+    </div>
+    
+    <input type="text" id="service-search" class="input" placeholder="Поиск" style="margin-bottom: 12px;">
+    
+    <div id="service-picker-list"></div>
+    
+  </div>
+  
 </div>
 
-    <script src="app.js"></script>
+<!-- ==================== НИЖНЯЯ НАВИГАЦИЯ ==================== -->
+<div class="bottom-nav" id="bottom-nav" style="display: none;">
+  <button class="nav-item active" data-nav="home" onclick="App.go('home')">
+    <i data-lucide="home"></i>
+    <span>Главная</span>
+  </button>
+  <button class="nav-item" data-nav="journal" onclick="App.go('journal')">
+    <i data-lucide="list"></i>
+    <span>Журнал</span>
+  </button>
+  <button class="nav-item" data-nav="reports" onclick="App.go('reports')">
+    <i data-lucide="bar-chart-3"></i>
+    <span>Отчёты</span>
+  </button>
+  <button class="nav-item" data-nav="settings" onclick="App.go('settings')">
+    <i data-lucide="settings"></i>
+    <span>Ещё</span>
+  </button>
+</div>
+
+<!-- ==================== TOAST ==================== -->
+<div class="toast" id="toast"></div>
+
+<!-- ==================== МОДАЛКА ==================== -->
+<div class="modal-backdrop" id="modal-backdrop" onclick="App.closeModal()"></div>
+<div class="modal" id="modal">
+  <div class="modal-content" id="modal-content"></div>
+</div>
+
+<script src="app.js"></script>
 </body>
 </html>
