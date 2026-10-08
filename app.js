@@ -1,1950 +1,1470 @@
-// Проверка версии приложения
-const APP_VERSION = '2.0.1';
+/* ============================================================
+   LASHES APP — APP.JS v2.0
+   Мгновенная загрузка, оффлайн, салоны
+   ============================================================ */
 
-// При загрузке проверяем версию
-window.addEventListener('load', () => {
-  const savedVersion = localStorage.getItem('app_version');
-  if (savedVersion !== APP_VERSION) {
-    localStorage.setItem('app_version', APP_VERSION);
-    
-    // Удаляем старый Service Worker
-    if ('serviceWorker' in navigator) {
-      navigator.serviceWorker.getRegistrations().then(registrations => {
-        registrations.forEach(registration => {
-          registration.unregister();
-        });
-      });
-      
-      // Перезагружаем страницу
-      setTimeout(() => {
-        window.location.reload(true);
-      }, 1000);
-    }
-  }
-});
-// ===================== КОНФИГУРАЦИЯ И СОСТОЯНИЕ =====================
-const API_URL =
-'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJD84CfxkirrKPtkDq7gfFcPd3S1nUsg2D-k6YT6i0BNxG-g/exec'; // ЗАМЕНИТЕ НА ВАШ URL
-let AUTH_TOKEN = localStorage.getItem('auth_token') || ''; // Берем из localStorage
+// ==================== КОНФИГ ====================
+const API_URL = 'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJD84CfxkirrKPtkDq7gfFcPd3S1nUsg2D-k6YT6i0BNxG-g/exec';
 
-let appState = {
-    data: {
-        settings: { DEFAULT_PERCENT: 50 },
-        servicesCatalog: [],
-        transactions: [],
-        payouts: []
-    },
-    currentScreen: 'dashboard',
-    selectedPeriodId: null,
-    pendingSync: []
+const STORAGE_KEYS = {
+  TOKEN: 'lash_token',
+  DATA: 'lash_data',
+  PENDING: 'lash_pending',
+  SALON: 'lash_current_salon',
+  LAST_SYNC: 'lash_last_sync'
 };
 
-// ===================== УЛУЧШЕННАЯ РАБОТА С МОДАЛЬНЫМИ ОКНАМИ =====================
-function closeModal() {
-    document.getElementById('modal').classList.add('hidden');
+// ==================== СОСТОЯНИЕ ====================
+const State = {
+  token: '',
+  data: {
+    master: { name: '', phone: '' },
+    salons: [],
+    totalDebt: 0,
+    recentOps: [],
+    services: {} // { salon_id: [services] }
+  },
+  fullData: null, // все транзакции/выплаты
+  pending: [],    // очередь неотправленного
+  currentSalonId: '',
+  currentScreen: 'loading',
+  network: 'online', // online | syncing | offline
+  draftVisit: { services: [] },
+  editingSalonId: null,
+  journalFilter: { salon: 'all', type: 'all' },
+  reportsFilter: { salon: 'all', period: 'month' }
+};
+
+// ==================== УТИЛИТЫ ====================
+function uuid() {
+  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+    const r = Math.random() * 16 | 0;
+    const v = c === 'x' ? r : (r & 0x3 | 0x8);
+    return v.toString(16);
+  });
 }
 
-// Закрытие по Escape
-document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') closeModal();
-});
+function formatMoney(amount) {
+  if (amount === null || amount === undefined || isNaN(amount)) return '0 ₽';
+  const rounded = Math.round(amount);
+  return rounded.toLocaleString('ru-RU') + ' ₽';
+}
 
-// Закрытие по клику вне окна
-document.addEventListener('click', (e) => {
-    const modal = document.getElementById('modal');
-    if (e.target === modal) closeModal();
-});
+function formatDate(date) {
+  const d = new Date(date);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+}
 
-// ===================== ХРАНИЛИЩЕ (LOCALSTORAGE) =====================
-function loadLocalData(key, defaultValue) {
+function formatDateFull(date) {
+  const d = new Date(date);
+  if (isNaN(d)) return '';
+  return d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+}
+
+function formatTime(date) {
+  const d = new Date(date);
+  if (isNaN(d)) return '';
+  return d.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+}
+
+function formatDateTimeLocal(date) {
+  const d = date ? new Date(date) : new Date();
+  const year = d.getFullYear();
+  const month = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hours = String(d.getHours()).padStart(2, '0');
+  const minutes = String(d.getMinutes()).padStart(2, '0');
+  return `${year}-${month}-${day}T${hours}:${minutes}`;
+}
+
+function parseMoney(str) {
+  return Number(String(str).replace(/\s/g, '').replace(/[^\d.,-]/g, '').replace(',', '.')) || 0;
+}
+
+function escapeHtml(str) {
+  return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ==================== STORAGE ====================
+const Storage = {
+  get(key, def = null) {
     try {
-        const data = localStorage.getItem(key);
-        return data ? JSON.parse(data) : defaultValue;
+      const v = localStorage.getItem(key);
+      return v ? JSON.parse(v) : def;
     } catch (e) {
-        console.error('Ошибка загрузки из LocalStorage:', e);
-        return defaultValue;
+      return def;
     }
-}
-
-function saveLocalData(key, value) {
+  },
+  set(key, value) {
     try {
-        localStorage.setItem(key, JSON.stringify(value));
+      localStorage.setItem(key, JSON.stringify(value));
     } catch (e) {
-        console.error('Ошибка сохранения в LocalStorage:', e);
+      console.error('Storage error:', e);
     }
+  },
+  remove(key) {
+    try { localStorage.removeItem(key); } catch (e) {}
+  }
+};
+
+// ==================== API ====================
+async function apiCall(action, params = {}, options = {}) {
+  if (!State.token) throw new Error('Нет токена');
+
+  const body = new URLSearchParams();
+  body.append('token', State.token);
+  body.append('action', action);
+  Object.entries(params).forEach(([k, v]) => {
+    if (typeof v === 'object' && v !== null) {
+      body.append(k, JSON.stringify(v));
+    } else {
+      body.append(k, v);
+    }
+  });
+
+  const timeout = options.timeout || 15000;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeout);
+
+  try {
+    const resp = await fetch(API_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+      body: body.toString(),
+      signal: controller.signal
+    });
+    clearTimeout(timeoutId);
+
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    if (!data.success && data.error) throw new Error(data.error);
+    return data;
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') throw new Error('Превышено время ожидания');
+    throw e;
+  }
 }
 
-function savePendingSync(pending) {
-    saveLocalData('pendingSync', pending);
+// ==================== СЕТЬ ====================
+function setNetwork(status) {
+  State.network = status;
+  const el = document.getElementById('sync-indicator');
+  const txt = document.getElementById('sync-text');
+  if (!el || !txt) return;
+  el.classList.remove('online', 'syncing', 'offline');
+  el.classList.add(status);
+  txt.textContent = status === 'online' ? 'Синхронизировано' :
+                   status === 'syncing' ? 'Синхронизация' :
+                   'Офлайн';
 }
 
-function loadPendingSync() {
-    return loadLocalData('pendingSync', []);
+async function syncData(silent = false) {
+  if (!State.token) return;
+  setNetwork('syncing');
+
+  try {
+    const [quick, full] = await Promise.all([
+      apiCall('getQuickData'),
+      apiCall('getFullData').catch(() => null)
+    ]);
+
+    if (quick.success) {
+      State.data.master = quick.master;
+      State.data.salons = quick.salons;
+      State.data.totalDebt = quick.totalDebt;
+      State.data.recentOps = quick.recentOps;
+    }
+
+    if (full && full.success) {
+      State.fullData = {
+        transactions: full.transactions,
+        payouts: full.payouts,
+        salons: full.salons
+      };
+    }
+
+    // Сохраняем в localStorage
+    Storage.set(STORAGE_KEYS.DATA, State.data);
+    if (State.fullData) Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+    Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
+
+    setNetwork('online');
+    return true;
+  } catch (e) {
+    console.error('Sync error:', e);
+    setNetwork('offline');
+    return false;
+  }
 }
 
-// ===================== API ВЗАИМОДЕЙСТВИЕ =====================
-async function apiCall(action, params = {}) {
-    if (!AUTH_TOKEN) {
-        throw new Error('Токен не задан. Введите токен авторизации.');
-    }
+// ==================== СИНХРОНИЗАЦИЯ ОЧЕРЕДИ ====================
+async function flushPending() {
+  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+  if (pending.length === 0) return;
 
-    const formData = new URLSearchParams();
-    formData.append('token', AUTH_TOKEN);
-    formData.append('action', action);
-
-    for (const [key, value] of Object.entries(params)) {
-        if (typeof value === 'object') {
-            formData.append(key, JSON.stringify(value));
-        } else {
-            formData.append(key, value);
-        }
-    }
-
+  const remaining = [];
+  for (const op of pending) {
     try {
-        const response = await fetch(API_URL, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
-            },
-            body: formData
-        });
-
-        if (!response.ok) {
-            throw new Error(`HTTP error! status: ${response.status}`);
-        }
-
-        const data = await response.json();
-        if (!data.success && data.error) {
-            throw new Error(data.error);
-        }
-        return data;
-    } catch (error) {
-        console.error('Ошибка API:', error);
-        throw error;
+      if (op.type === 'add_visit') {
+        await apiCall('addVisit', { payload: op.payload });
+      } else if (op.type === 'add_payout') {
+        await apiCall('addPayout', { payload: op.payload });
+      }
+      // Успех — не сохраняем
+    } catch (e) {
+      console.error('Pending error:', e);
+      op.attempts = (op.attempts || 0) + 1;
+      remaining.push(op);
     }
+  }
+
+  Storage.set(STORAGE_KEYS.PENDING, remaining);
+  updatePendingIndicator();
 }
 
-async function syncPendingVisits() {
-    const pending = loadPendingSync();
-    if (pending.length === 0) return;
+function addPending(op) {
+  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+  pending.push(op);
+  Storage.set(STORAGE_KEYS.PENDING, pending);
+  updatePendingIndicator();
+}
 
-    console.log(`Попытка синхронизации ${pending.length} визитов...`);
-    showToast(`Синхронизация ${pending.length} визитов...`);
+function updatePendingIndicator() {
+  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+  // Можем использовать в будущем для индикатора
+}
 
-    const unsynced = [];
-    for (const visit of pending) {
-        try {
-            await apiCall('addVisit', {
-                service_date: visit.service_date,
-                services: visit.services
-            });
-            console.log('Визит синхронизирован успешно.');
-        } catch (error) {
-            console.error('Ошибка синхронизации визита:', error);
-            unsynced.push(visit);
-        }
+// ==================== ГЛАВНЫЙ РОУТЕР ====================
+const App = {
+  go(screen) {
+    if (screen === 'loading' || screen === 'auth') {
+      showScreen(screen);
+      return;
+    }
+    if (!State.token) {
+      showScreen('auth');
+      return;
     }
 
-    savePendingSync(unsynced);
-    if (unsynced.length === 0) {
-        showToast('Все данные синхронизированы');
-    } else {
-        showToast(`Не удалось синхронизировать ${unsynced.length} визитов`);
-    }
-}
+    State.currentScreen = screen;
 
-async function fetchData() {
-    try {
-        const data = await apiCall('getData');
-        appState.data = data;
-        console.log('Данные обновлены');
-    } catch (error) {
-        console.error('Не удалось получить данные:', error);
-        showToast('Ошибка загрузки данных');
-        throw error; // Пробрасываем ошибку выше
-    }
-}
-
-// ===================== НАВИГАЦИЯ =====================
-function showScreen(screenName, params = {}) {
-    appState.currentScreen = screenName;
-    closeModal();
-
-    if (screenName === 'dashboard') renderDashboard();
-    else if (screenName === 'addVisit') renderAddVisit();
-    else if (screenName === 'history') renderHistory();
-    else if (screenName === 'catalog') renderCatalog();
-    else if (screenName === 'pricelist') renderPriceList();
-    else if (screenName === 'periodDetail') renderPeriodDetail(params.periodId);
-    else if (screenName === 'initialSetup') renderInitialSetup();
-
-    const fab = document.getElementById('fab-add');
-    if (fab) {
-        if (screenName === 'dashboard') {
-            fab.classList.remove('hidden');
-        } else {
-            fab.classList.add('hidden');
-        }
+    if (screen === 'home') {
+      renderHome();
+    } else if (screen === 'add-visit') {
+      renderAddVisit();
+    } else if (screen === 'payout') {
+      renderPayout();
+    } else if (screen === 'journal') {
+      renderJournal();
+    } else if (screen === 'reports') {
+      renderReports();
+    } else if (screen === 'settings') {
+      renderSettings();
+    } else if (screen === 'salons') {
+      renderSalons();
+    } else if (screen === 'salon-edit') {
+      renderSalonEdit();
     }
 
-    window.scrollTo(0, 0);
-}
+    showScreen(screen);
+    updateBottomNav(screen);
+  },
 
-// ===================== ЭКРАНЫ =====================
-function renderInitialSetup() {
-    const content = document.getElementById('content');
-    const loading = document.getElementById('loading');
+  // ==================== ДОБАВЛЕНИЕ ВИЗИТА ====================
+  openServicePicker() {
+    renderServicePicker('visit');
+    showScreen('service-picker');
+  },
 
-    // Скрываем загрузку, показываем контент
-    loading.classList.add('hidden');
-    content.classList.remove('hidden');
-
-    content.innerHTML = `
-    <div class="bg-white rounded-lg shadow p-6 mt-8">
-        <h2 class="text-xl font-semibold mb-4 text-center">Вход в приложение</h2>
-        <p class="text-sm text-gray-600 mb-4 text-center">
-            Введите ваш секретный токен для доступа к данным
-        </p>
-        <input type="password" id="auth-token-input" placeholder="Введите токен"
-            class="w-full p-3 border border-gray-300 rounded mb-3 text-base" autocomplete="off">
-        <button onclick="handleInitialize()"
-            class="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 text-base font-medium">
-            Подключиться
-        </button>
-        <p class="text-xs text-gray-400 mt-4 text-center">
-            Токен можно получить у администратора системы
-        </p>
-    </div>
-    `;
-
-    // Фокус на поле ввода
-    setTimeout(() => {
-        document.getElementById('auth-token-input')?.focus();
-    }, 100);
-}
-
-async function handleInitialize() {
-    const token = document.getElementById('auth-token-input').value.trim();
-    if (token) {
-        AUTH_TOKEN = token;
-        localStorage.setItem('auth_token', token);
-        
-        showLoading('Подключение...'); // ДОБАВЬТЕ
-        
-        try {
-            await fetchData();
-            hideLoading(); // ДОБАВЬТЕ
-            showToast('Подключено успешно!');
-            showScreen('dashboard');
-        } catch (e) {
-            hideLoading(); // ДОБАВЬТЕ
-            localStorage.removeItem('auth_token');
-            AUTH_TOKEN = '';
-            showToast('Ошибка: ' + e.message);
-        }
-    } else {
-        showToast('Введите токен');
-    }
-}
-
-function renderDashboard() {
-    const { transactions, payouts, settings } = appState.data;
-    const content = document.getElementById('content');
-    const loading = document.getElementById('loading');
-
-    loading.classList.add('hidden');
-    content.classList.remove('hidden');
-
-    const totalDebt = calculateTotalDebt(transactions, payouts);
-    const currentPeriodEarnings = calculateCurrentPeriodEarnings(transactions);
-    const todayEarnings = calculateCalendarEarnings(transactions, 'today');
-    const monthEarnings = calculateCalendarEarnings(transactions, 'month');
-    const yearEarnings = calculateCalendarEarnings(transactions, 'year');
-
-    content.innerHTML = `
-    <!-- Навигация -->
-    <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
-        <div class="grid grid-cols-4 text-center text-sm">
-            <button onclick="showScreen('dashboard')" class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">
-                📊
-            </button>
-            <button onclick="showScreen('history')" class="py-3 text-gray-600 hover:text-blue-600">
-                📅
-            </button>
-            <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">
-                📋
-            </button>
-            <button onclick="showScreen('catalog')" class="py-3 text-gray-600 hover:text-blue-600">
-                ⚙️
-            </button>
-        </div>
-    </div>
-
-    <div class="space-y-4">
-        <!-- Главный виджет -->
-        <div class="bg-white rounded-lg shadow p-5 text-center">
-            <p class="text-sm text-gray-500">Общий долг салона</p>
-            <p class="text-3xl font-bold text-red-600 my-2">${formatMoney(totalDebt)}</p>
-            <button onclick="showScreen('history')" class="text-sm text-blue-500 hover:underline">История периодов</button>
-        </div>
-
-        <!-- Текущий период -->
-        <div class="bg-white rounded-lg shadow p-5">
-            <div class="flex justify-between items-center cursor-pointer" onclick="showScreen('periodDetail', { periodId: 'CURRENT' })">
-                <div>
-                    <p class="text-sm text-gray-500">Текущий период (нажмите для деталей)</p>
-                    <p class="text-xl font-semibold">${formatMoney(currentPeriodEarnings)}</p>
-                </div>
-                <span class="text-blue-500">→</span>
-            </div>
-            <button onclick="handleClosePeriod()" class="w-full mt-3 bg-yellow-500 text-white px-4 py-3 rounded-lg hover:bg-yellow-600 text-base">Закрыть период</button>
-        </div>
-
-                    <!-- Календарная аналитика -->
-            <div class="bg-white rounded-lg shadow p-5">
-                <p class="text-sm text-gray-500 mb-3">Доход по календарю (нажмите для деталей)</p>
-                <div class="grid grid-cols-3 gap-3 text-center">
-                    <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('today')">
-                        <p class="text-xs text-gray-400">Сегодня</p>
-                        <p class="font-semibold">${formatMoney(todayEarnings)}</p>
-                    </div>
-                    <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('month')">
-                        <p class="text-xs text-gray-400">За месяц</p>
-                        <p class="font-semibold">${formatMoney(monthEarnings)}</p>
-                    </div>
-                    <div class="bg-gray-50 rounded-lg p-3 cursor-pointer hover:bg-gray-100" onclick="showAnalytics('year')">
-                        <p class="text-xs text-gray-400">За год</p>
-                        <p class="font-semibold">${formatMoney(yearEarnings)}</p>
-                    </div>
-                </div>
-                <button onclick="showAnalytics('custom')" class="w-full mt-3 bg-gray-100 text-gray-700 py-2 rounded-lg text-sm">
-                    📊 Расширенная аналитика
-                </button>
-            </div>
-            
-    `;
-}
-
-function showAnalytics(period = 'month') {
-    const { transactions } = appState.data;
-    const now = new Date();
-    let startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-    let endDate = now;
-    
-    if (period === 'today') {
-        startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        endDate = now;
-    } else if (period === 'week') {
-        startDate = new Date(now);
-        startDate.setDate(now.getDate() - 7);
-        endDate = now;
-    } else if (period === 'month') {
-        startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-        endDate = now;
-    } else if (period === 'quarter') {
-        const quarter = Math.floor(now.getMonth() / 3);
-        startDate = new Date(now.getFullYear(), quarter * 3, 1);
-        endDate = now;
-    } else if (period === 'year') {
-        startDate = new Date(now.getFullYear(), 0, 1);
-        endDate = now;
-    } else if (period === 'custom') {
-        showCustomPeriodModal();
-        return;
-    }
-    
-    renderAnalytics(startDate, endDate, period);
-}
-
-function renderAnalytics(startDate, endDate, periodName) {
-    const { transactions } = appState.data;
-    
-    // Фильтруем транзакции
-    const filtered = transactions.filter(t => {
-        const date = new Date(t.service_date);
-        return date >= startDate && date <= endDate;
+  addServiceToVisit(service) {
+    State.draftVisit.services.push({
+      service_id: service.service_id,
+      service_name: service.service_name,
+      full_price: service.base_price,
+      discount_percent: 0,
+      master_percent: App.getCurrentSalon()?.default_percent || 50
     });
-    
-    // Считаем итоги
-    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
-    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
-    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
-    
-    // Статистика по услугам
-    const serviceStats = {};
-    filtered.forEach(t => {
-        const serviceName = t.service_name || 'Без названия';
-        if (!serviceStats[serviceName]) {
-            serviceStats[serviceName] = {
-                count: 0,
-                total: 0,
-                earnings: 0
-            };
-        }
-        serviceStats[serviceName].count++;
-        serviceStats[serviceName].total += (t.final_price || t.full_price || 0);
-        serviceStats[serviceName].earnings += t.master_earnings;
-    });
-    
-    // Группировка по дням для графика
-    const dailyData = {};
-    filtered.forEach(t => {
-        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric' });
-        if (!dailyData[dateKey]) {
-            dailyData[dateKey] = {
-                count: 0,
-                amount: 0
-            };
-        }
-        dailyData[dateKey].count++;
-        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
-    });
-    
-    // График
-    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
-    const barChart = Object.entries(dailyData).map(([date, data]) => {
-        const barHeight = Math.max(10, (data.amount / maxAmount) * 150);
-        return `
-            <div class="flex flex-col items-center flex-shrink-0">
-                <div class="text-xs mb-1">${Math.round(data.amount)}</div>
-                <div class="w-10 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
-                <div class="text-xs mt-1">${date}</div>
-            </div>
-        `;
-    }).join('');
-    
-    const periodLabel = periodName === 'today' ? 'Сегодня' : 
-                        periodName === 'week' ? 'Последние 7 дней' :
-                        periodName === 'month' ? 'Текущий месяц' :
-                        periodName === 'quarter' ? 'Текущий квартал' :
-                        periodName === 'year' ? 'Текущий год' :
-                        'Произвольный период';
-    
-    const content = document.getElementById('content');
-    content.innerHTML = `
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xl font-semibold">Аналитика: ${periodLabel}</h2>
-                <button onclick="showScreen('dashboard')" class="text-blue-500 text-base">← Назад</button>
-            </div>
-            
-            <div class="text-sm text-gray-500 mb-3">
-                ${startDate.toLocaleDateString('ru-RU')} - ${endDate.toLocaleDateString('ru-RU')}
-            </div>
-            
-            <!-- Кнопки фильтров -->
-            <div class="flex space-x-2 mb-4 overflow-x-auto">
-                <button onclick="showAnalytics('today')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'today' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Сегодня</button>
-                <button onclick="showAnalytics('week')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'week' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">7 дней</button>
-                <button onclick="showAnalytics('month')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'month' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Месяц</button>
-                <button onclick="showAnalytics('quarter')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'quarter' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Квартал</button>
-                <button onclick="showAnalytics('year')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'year' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Год</button>
-                <button onclick="showCustomPeriodModal()" class="px-4 py-2 rounded-lg whitespace-nowrap bg-gray-200">📅 Свой</button>
-            </div>
-            
-            <!-- Сводка -->
-            <div class="grid grid-cols-2 gap-3 mb-4">
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Услуг оказано</p>
-                    <p class="text-xl font-semibold">${filtered.length}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Общая стоимость</p>
-                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Скидки</p>
-                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Заработок мастера</p>
-                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
-                </div>
-            </div>
-            
-            <!-- График -->
-            <div class="bg-gray-50 rounded-lg p-4 mb-4">
-                <h3 class="font-semibold mb-3">Динамика доходов</h3>
-                ${filtered.length > 0 ? `
-                    <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 180px;">
-                        ${barChart}
-                    </div>
-                ` : '<p class="text-gray-500 text-center py-8">Нет данных за выбранный период</p>'}
-            </div>
-            
-            <!-- Статистика по услугам -->
-            <div class="bg-gray-50 rounded-lg p-4 mb-4">
-                <h3 class="font-semibold mb-3">Популярность услуг</h3>
-                ${Object.keys(serviceStats).length > 0 ? `
-                    <div class="space-y-2">
-                        ${Object.entries(serviceStats).sort((a, b) => b[1].count - a[1].count).map(([name, stats]) => `
-                            <div class="flex justify-between items-center border-b py-2">
-                                <span class="text-sm">${name}</span>
-                                <span class="text-sm font-medium">${stats.count} шт.</span>
-                                <span class="text-sm text-green-600">${formatMoney(stats.total)}</span>
-                            </div>
-                        `).join('')}
-                    </div>
-                ` : '<p class="text-gray-500">Нет данных</p>'}
-            </div>
-            
-            <!-- Детализация -->
-            <div class="space-y-2">
-                <h3 class="font-semibold mb-2">Детализация</h3>
-                ${filtered.length > 0 ? filtered.map(t => `
-                    <div class="flex justify-between items-center border-b py-2 text-sm">
-                        <span class="flex-grow">${t.service_name}</span>
-                        <span class="mx-2">${formatMoney(t.full_price || 0)}</span>
-                        ${t.discount_percent > 0 ? `<span class="text-red-500 text-xs">-${t.discount_percent}%</span>` : ''}
-                        <span class="text-green-600 mx-2">${formatMoney(t.master_earnings)}</span>
-                    </div>
-                `).join('') : '<p class="text-gray-500">Нет транзакций</p>'}
-            </div>
-        </div>
-    `;
-    
-    appState.currentScreen = 'analytics';
-    document.getElementById('fab-add').classList.add('hidden');
-    window.scrollTo(0, 0);
-}
+    renderVisitServices();
+    App.go('add-visit');
+  },
 
-function showCustomPeriodModal() {
-    const modal = document.getElementById('modal');
-    const modalContent = document.getElementById('modal-content');
-    
-    modalContent.innerHTML = `
-        <h3 class="text-lg font-semibold mb-4">Выберите период</h3>
-        
-        <div class="space-y-2 mb-4">
-            <button onclick="showAnalytics('today')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Сегодня</button>
-            <button onclick="showAnalytics('week')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Последние 7 дней</button>
-            <button onclick="showAnalytics('month')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий месяц</button>
-            <button onclick="showAnalytics('quarter')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий квартал</button>
-            <button onclick="showAnalytics('year')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий год</button>
-        </div>
-        
-        <div class="border-t pt-3">
-            <p class="text-sm font-medium mb-2">Произвольный период:</p>
-            <div class="space-y-2">
-                <div>
-                    <label class="block text-xs text-gray-500">С даты:</label>
-                    <input type="date" id="custom-start-date" class="w-full p-3 border border-gray-300 rounded text-base">
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500">По дату:</label>
-                    <input type="date" id="custom-end-date" class="w-full p-3 border border-gray-300 rounded text-base">
-                </div>
-                <button onclick="applyCustomPeriod()" class="w-full bg-blue-500 text-white py-3 rounded-lg text-base">Применить</button>
-            </div>
-        </div>
-    `;
-    
-    modal.classList.remove('hidden');
-}
+  async saveVisit() {
+    const btn = document.getElementById('btn-save-visit');
+    const salonId = State.currentSalonId;
 
-function applyCustomPeriod() {
-    const startDate = document.getElementById('custom-start-date').value;
-    const endDate = document.getElementById('custom-end-date').value;
-    
-    if (startDate && endDate) {
-        closeModal();
-        renderAnalytics(new Date(startDate), new Date(endDate), 'custom');
-    } else {
-        showToast('Выберите обе даты');
+    if (!salonId) {
+      toast('Выберите салон', 'error');
+      return;
     }
-}
-
-function showCustomPeriodModal() {
-    const modal = document.getElementById('modal');
-    const modalContent = document.getElementById('modal-content');
-    
-    modalContent.innerHTML = `
-        <h3 class="text-lg font-semibold mb-4">Выберите период</h3>
-        
-        <div class="space-y-2 mb-4">
-            <button onclick="showAnalytics('today')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Сегодня</button>
-            <button onclick="showAnalytics('week')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Последние 7 дней</button>
-            <button onclick="showAnalytics('month')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий месяц</button>
-            <button onclick="showAnalytics('quarter')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий квартал</button>
-            <button onclick="showAnalytics('year')" class="w-full bg-gray-100 py-3 rounded-lg text-base">Текущий год</button>
-        </div>
-        
-        <div class="border-t pt-3">
-            <p class="text-sm font-medium mb-2">Произвольный период:</p>
-            <div class="space-y-2">
-                <div>
-                    <label class="block text-xs text-gray-500">С даты:</label>
-                    <input type="date" id="custom-start-date" class="w-full p-3 border border-gray-300 rounded text-base">
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500">По дату:</label>
-                    <input type="date" id="custom-end-date" class="w-full p-3 border border-gray-300 rounded text-base">
-                </div>
-                <button onclick="applyCustomPeriod()" class="w-full bg-blue-500 text-white py-3 rounded-lg text-base">Применить</button>
-            </div>
-        </div>
-    `;
-    
-    modal.classList.remove('hidden');
-}
-
-function applyCustomPeriod() {
-    const startDate = document.getElementById('custom-start-date').value;
-    const endDate = document.getElementById('custom-end-date').value;
-    
-    if (startDate && endDate) {
-        closeModal();
-        renderAnalytics(new Date(startDate), new Date(endDate), 'custom');
-    } else {
-        showToast('Выберите обе даты');
-    }
-}
-
-function renderAnalytics(startDate, endDate, periodName) {
-    const { transactions } = appState.data;
-    
-    // Фильтруем транзакции
-    const filtered = transactions.filter(t => {
-        const date = new Date(t.service_date);
-        return date >= startDate && date <= endDate;
-    });
-    
-    // Считаем итоги
-    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
-    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
-    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
-    
-    // Группировка по дням для графика
-    const dailyData = {};
-    filtered.forEach(t => {
-        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU', { day: 'numeric', month: 'numeric' });
-        if (!dailyData[dateKey]) {
-            dailyData[dateKey] = {
-                services: 0,
-                amount: 0,
-                earnings: 0
-            };
-        }
-        dailyData[dateKey].services++;
-        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
-        dailyData[dateKey].earnings += t.master_earnings;
-    });
-    
-    // Создаем график
-    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
-    const barChart = Object.entries(dailyData).map(([date, data]) => {
-        const barHeight = Math.max(10, (data.amount / maxAmount) * 150);
-        return `
-            <div class="flex flex-col items-center flex-shrink-0">
-                <div class="text-xs mb-1">${Math.round(data.amount)}</div>
-                <div class="w-12 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
-                <div class="text-xs mt-1">${date}</div>
-            </div>
-        `;
-    }).join('');
-    
-    const periodLabel = periodName === 'today' ? 'Сегодня' : 
-                        periodName === 'week' ? 'Последние 7 дней' :
-                        periodName === 'month' ? 'Текущий месяц' :
-                        periodName === 'quarter' ? 'Текущий квартал' :
-                        periodName === 'year' ? 'Текущий год' :
-                        'Произвольный период';
-    
-    const content = document.getElementById('content');
-    content.innerHTML = `
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xl font-semibold">Аналитика: ${periodLabel}</h2>
-                <button onclick="showScreen('dashboard')" class="text-blue-500 text-base">← Назад</button>
-            </div>
-            
-            <div class="text-sm text-gray-500 mb-3">
-                ${startDate.toLocaleDateString('ru-RU')} - ${endDate.toLocaleDateString('ru-RU')}
-            </div>
-            
-            <!-- Кнопки фильтров -->
-            <div class="flex space-x-2 mb-4 overflow-x-auto">
-                <button onclick="showAnalytics('today')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'today' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Сегодня</button>
-                <button onclick="showAnalytics('week')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'week' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">7 дней</button>
-                <button onclick="showAnalytics('month')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'month' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Месяц</button>
-                <button onclick="showAnalytics('quarter')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'quarter' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Квартал</button>
-                <button onclick="showAnalytics('year')" class="px-4 py-2 rounded-lg whitespace-nowrap ${periodName === 'year' ? 'bg-blue-500 text-white' : 'bg-gray-200'}">Год</button>
-                <button onclick="showCustomPeriodModal()" class="px-4 py-2 rounded-lg whitespace-nowrap bg-gray-200">📅 Свой</button>
-            </div>
-            
-            <!-- Сводка -->
-            <div class="grid grid-cols-2 gap-3 mb-4">
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Услуг оказано</p>
-                    <p class="text-xl font-semibold">${filtered.length}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Общая стоимость</p>
-                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Скидки</p>
-                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Заработок мастера</p>
-                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
-                </div>
-            </div>
-            
-            <!-- График -->
-            <div class="bg-gray-50 rounded-lg p-4 mb-4">
-                <h3 class="font-semibold mb-3">Динамика доходов</h3>
-                ${filtered.length > 0 ? `
-                    <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 180px;">
-                        ${barChart}
-                    </div>
-                ` : '<p class="text-gray-500 text-center py-8">Нет данных за выбранный период</p>'}
-            </div>
-            
-            <!-- Детализация -->
-            <div class="space-y-2">
-                <h3 class="font-semibold mb-2">Детализация</h3>
-                ${filtered.length > 0 ? filtered.map(t => `
-                    <div class="flex justify-between items-center border-b py-2 text-sm">
-                        <span class="flex-grow">${t.service_name}</span>
-                        <span class="mx-2">${formatMoney(t.full_price || 0)}</span>
-                        ${t.discount_percent > 0 ? `<span class="text-red-500 text-xs">-${t.discount_percent}%</span>` : ''}
-                        <span class="text-green-600 mx-2">${formatMoney(t.master_earnings)}</span>
-                    </div>
-                `).join('') : '<p class="text-gray-500">Нет транзакций</p>'}
-            </div>
-        </div>
-    `;
-    
-    appState.currentScreen = 'analytics';
-    document.getElementById('fab-add').classList.add('hidden');
-    window.scrollTo(0, 0);
-}
-
-function showCustomPeriodModal() {
-    const modal = document.getElementById('modal');
-    const modalContent = document.getElementById('modal-content');
-    
-    modalContent.innerHTML = `
-        <h3 class="text-lg font-semibold mb-4">Выберите период</h3>
-        
-        <div class="space-y-3 mb-4">
-            <button onclick="showAnalytics('today')" class="w-full bg-gray-100 py-2 rounded-lg">Сегодня</button>
-            <button onclick="showAnalytics('week')" class="w-full bg-gray-100 py-2 rounded-lg">Последние 7 дней</button>
-            <button onclick="showAnalytics('month')" class="w-full bg-gray-100 py-2 rounded-lg">Текущий месяц</button>
-            <button onclick="showAnalytics('quarter')" class="w-full bg-gray-100 py-2 rounded-lg">Текущий квартал</button>
-            <button onclick="showAnalytics('year')" class="w-full bg-gray-100 py-2 rounded-lg">Текущий год</button>
-        </div>
-        
-        <div class="border-t pt-3">
-            <p class="text-sm font-medium mb-2">Произвольный период:</p>
-            <div class="space-y-2">
-                <div>
-                    <label class="block text-xs text-gray-500">С даты:</label>
-                    <input type="date" id="custom-start-date" class="w-full p-2 border border-gray-300 rounded">
-                </div>
-                <div>
-                    <label class="block text-xs text-gray-500">По дату:</label>
-                    <input type="date" id="custom-end-date" class="w-full p-2 border border-gray-300 rounded">
-                </div>
-                <button onclick="applyCustomPeriod()" class="w-full bg-blue-500 text-white py-2 rounded-lg">Применить</button>
-            </div>
-        </div>
-    `;
-    
-    modal.classList.remove('hidden');
-}
-
-function applyCustomPeriod() {
-    const startDate = document.getElementById('custom-start-date').value;
-    const endDate = document.getElementById('custom-end-date').value;
-    
-    if (startDate && endDate) {
-        closeModal();
-        renderAnalytics(new Date(startDate), new Date(endDate), 'custom');
-    } else {
-        showToast('Выберите обе даты');
-    }
-}
-
-function renderAnalytics(startDate, endDate, periodName) {
-    const { transactions } = appState.data;
-    
-    // Фильтруем транзакции
-    const filtered = transactions.filter(t => {
-        const date = new Date(t.service_date);
-        return date >= startDate && date <= endDate;
-    });
-    
-    // Считаем итоги
-    const totalServices = filtered.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
-    const totalDiscount = filtered.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
-    const totalEarnings = filtered.reduce((sum, t) => sum + t.master_earnings, 0);
-    
-    // Группировка по дням
-    const dailyData = {};
-    filtered.forEach(t => {
-        const dateKey = new Date(t.service_date).toLocaleDateString('ru-RU');
-        if (!dailyData[dateKey]) {
-            dailyData[dateKey] = {
-                services: 0,
-                amount: 0,
-                earnings: 0,
-                discounts: 0
-            };
-        }
-        dailyData[dateKey].services++;
-        dailyData[dateKey].amount += (t.final_price || t.full_price || 0);
-        dailyData[dateKey].earnings += t.master_earnings;
-        dailyData[dateKey].discounts += (t.discount_amount || 0);
-    });
-    
-    // Создаем простой график
-    const maxAmount = Math.max(...Object.values(dailyData).map(d => d.amount), 1);
-    const barChart = Object.entries(dailyData).map(([date, data]) => {
-        const barHeight = Math.max(5, (data.amount / maxAmount) * 150);
-        return `
-            <div class="flex flex-col items-center flex-shrink-0">
-                <div class="text-xs mb-1">${Math.round(data.amount)}</div>
-                <div class="w-10 bg-blue-500 rounded-t" style="height: ${barHeight}px"></div>
-                <div class="text-xs mt-1">${date.split('.')[0]}.${date.split('.')[1]}</div>
-            </div>
-        `;
-    }).join('');
-    
-    const periodLabel = periodName === 'today' ? 'Сегодня' : 
-                        periodName === 'week' ? 'Последние 7 дней' :
-                        periodName === 'month' ? 'Текущий месяц' :
-                        periodName === 'quarter' ? 'Текущий квартал' :
-                        periodName === 'year' ? 'Текущий год' :
-                        'Произвольный период';
-    
-    const content = document.getElementById('content');
-    content.innerHTML = `
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="flex justify-between items-center mb-4">
-                <h2 class="text-xl font-semibold">Аналитика: ${periodLabel}</h2>
-                <button onclick="showScreen('dashboard')" class="text-blue-500 text-base">← Назад</button>
-            </div>
-            
-            <div class="text-sm text-gray-500 mb-3">
-                ${startDate.toLocaleDateString('ru-RU')} - ${endDate.toLocaleDateString('ru-RU')}
-            </div>
-            
-            <!-- Сводка -->
-            <div class="grid grid-cols-2 gap-3 mb-4">
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Услуг оказано</p>
-                    <p class="text-xl font-semibold">${filtered.length}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Общая стоимость</p>
-                    <p class="text-xl font-semibold">${formatMoney(totalServices)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Скидки</p>
-                    <p class="text-xl font-semibold text-red-500">-${formatMoney(totalDiscount)}</p>
-                </div>
-                <div class="bg-gray-50 rounded-lg p-3">
-                    <p class="text-xs text-gray-500">Заработок</p>
-                    <p class="text-xl font-semibold text-green-600">${formatMoney(totalEarnings)}</p>
-                </div>
-            </div>
-            
-            <!-- График -->
-            <div class="bg-gray-50 rounded-lg p-4 mb-4">
-                <h3 class="font-semibold mb-3">Доходы по дням</h3>
-                <div class="flex items-end space-x-2 overflow-x-auto" style="min-height: 180px;">
-                    ${barChart || '<p class="text-gray-500">Нет данных за выбранный период</p>'}
-                </div>
-            </div>
-            
-            <!-- Кнопка смены периода -->
-            <button onclick="showCustomPeriodModal()" class="w-full bg-gray-100 text-gray-700 py-2 rounded-lg mb-4 text-sm">
-                📅 Изменить период
-            </button>
-            
-            <!-- Таблица -->
-            <div class="space-y-2">
-                <h3 class="font-semibold mb-2">Детализация</h3>
-                ${filtered.length > 0 ? filtered.map(t => `
-                    <div class="flex justify-between items-center border-b py-2 text-sm">
-                        <span class="flex-grow">${t.service_name}</span>
-                        <span class="mx-2">${formatMoney(t.full_price || 0)}</span>
-                        ${t.discount_percent > 0 ? `<span class="text-red-500 text-xs">-${t.discount_percent}%</span>` : ''}
-                        <span class="text-green-600 mx-2">${formatMoney(t.master_earnings)}</span>
-                    </div>
-                `).join('') : '<p class="text-gray-500">Нет транзакций</p>'}
-            </div>
-        </div>
-    `;
-    
-    appState.currentScreen = 'analytics';
-    document.getElementById('fab-add').classList.add('hidden');
-    window.scrollTo(0, 0);
-}
-
-
-function renderAddVisit() {
-    const { servicesCatalog, settings } = appState.data;
-    const defaultPercent = settings.DEFAULT_PERCENT || 50;
-
-    const content = document.getElementById('content');
-    content.innerHTML = `
-    <div class="bg-white rounded-lg shadow p-4">
-        <div class="flex justify-between items-center mb-4">
-            <h2 class="text-xl font-semibold">Добавить визит</h2>
-            <button onclick="showScreen('dashboard')" class="text-gray-500 text-2xl">×</button>
-        </div>
-        <div class="mb-4">
-            <label class="block text-sm font-medium text-gray-700 mb-1">Дата и время</label>
-            <input type="datetime-local" id="service-date" class="w-full p-3 border border-gray-300 rounded text-base"
-                value="${getCurrentDateTimeLocal()}">
-        </div>
-        <div id="services-list" class="space-y-3"></div>
-        <button onclick="addServiceRow()"
-            class="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 mt-4 text-base">+ Добавить
-            услугу</button>
-        <div class="mt-6 border-t pt-4">
-            <div class="flex justify-between text-base mb-2">
-                <span>Стоимость визита:</span>
-                <span id="total-full-price" class="font-semibold">0 ₽</span>
-            </div>
-            <div id="total-discount" class="text-right text-sm text-red-500 mb-2 hidden"></div>
-            <div class="flex justify-between text-base mb-3">
-                <span>Заработок мастера:</span>
-                <span id="total-master-earnings" class="font-semibold text-green-600">0 ₽</span>
-            </div>
-            <button onclick="handleSaveVisit()"
-                class="w-full bg-green-500 text-white py-4 rounded-lg hover:bg-green-600 text-lg font-semibold">Сохранить
-                визит</button>
-        </div>
-    </div>
-    `;
-
-    addServiceRow();
-}
-
-function addServiceRow(serviceData = {}) {
-    const { servicesCatalog } = appState.data;
-    const servicesList = document.getElementById('services-list');
-    const rowId = Date.now() + Math.random();
-
-    const rowDiv = document.createElement('div');
-    rowDiv.className = 'service-row border rounded-lg p-3 bg-gray-50';
-    rowDiv.id = `row-${rowId}`;
-    rowDiv.innerHTML = `
-        <div class="flex space-x-2 items-start">
-            <div class="flex-grow">
-                <select class="w-full p-3 border border-gray-300 rounded text-base service-select">
-                    <option value="">Выберите услугу...</option>
-                    ${servicesCatalog.map(s => `<option value="${s.service_id}" ${s.service_id === serviceData.service_id ? 'selected' : ''}>${s.service_name}</option>`).join('')}
-                </select>
-            </div>
-            <button onclick="deleteServiceRow('${rowId}')" class="text-red-500 hover:text-red-700 text-2xl px-3 py-2">×</button>
-        </div>
-        <div class="grid grid-cols-3 gap-2 mt-2">
-            <div>
-                <label class="block text-xs text-gray-500">Цена (₽)</label>
-                <input type="number" class="w-full p-3 border border-gray-300 rounded text-base price-input" value="${serviceData.full_price || ''}" placeholder="0">
-            </div>
-            <div>
-                <label class="block text-xs text-gray-500">Скидка (%)</label>
-                <input type="number" class="w-full p-3 border border-gray-300 rounded text-base discount-percent-input" value="${serviceData.discount_percent || 0}" placeholder="0" min="0" max="100">
-            </div>
-            <div>
-                <label class="block text-xs text-gray-500">Процент</label>
-                <input type="number" class="w-full p-3 border border-gray-300 rounded text-base percent-input" value="${serviceData.master_percent || appState.data.settings.DEFAULT_PERCENT || 50}">
-            </div>
-        </div>
-        <div class="flex justify-between items-center mt-2 text-sm">
-            <span class="text-gray-500">Итого со скидкой:</span>
-            <span class="font-semibold final-price-display">0 ₽</span>
-        </div>
-    `;
-
-    servicesList.appendChild(rowDiv);
-    attachRowListeners(rowDiv);
-    updateTotals();
-}
-
-function attachRowListeners(rowDiv) {
-    const select = rowDiv.querySelector('.service-select');
-    const priceInput = rowDiv.querySelector('.price-input');
-    const discountPercentInput = rowDiv.querySelector('.discount-percent-input');
-    const percentInput = rowDiv.querySelector('.percent-input');
-    const finalPriceDisplay = rowDiv.querySelector('.final-price-display');
-
-    function updateFinalPrice() {
-        const price = parseFloat(priceInput.value) || 0;
-        const discountPercent = parseFloat(discountPercentInput.value) || 0;
-        const discountAmount = price * (discountPercent / 100);
-        const finalPrice = Math.max(0, price - discountAmount);
-        finalPriceDisplay.textContent = formatMoney(finalPrice) + (discountPercent > 0 ? ` (-${discountPercent}%)` : '');
-        updateTotals();
+    if (State.draftVisit.services.length === 0) {
+      toast('Добавьте услугу', 'error');
+      return;
     }
 
-    select.addEventListener('change', (e) => {
-        const service = appState.data.servicesCatalog.find(s => s.service_id === e.target.value);
-        if (service) {
-            priceInput.value = service.base_price;
-            discountPercentInput.value = 0;
-            percentInput.value = appState.data.settings.DEFAULT_PERCENT || 50;
-            updateFinalPrice();
-        }
-    });
+    const dateInput = document.getElementById('visit-date').value;
+    const serviceDate = dateInput ? new Date(dateInput).toISOString() : new Date().toISOString();
+    const clientId = uuid();
 
-    priceInput.addEventListener('input', updateFinalPrice);
-    discountPercentInput.addEventListener('input', updateFinalPrice);
-    percentInput.addEventListener('input', updateTotals);
-}
-
-function deleteServiceRow(rowId) {
-    const row = document.getElementById(`row-${rowId}`);
-    if (row) {
-        row.remove();
-        updateTotals();
-    }
-}
-
-function updateTotals() {
-    const rows = document.querySelectorAll('.service-row');
-    let totalFull = 0;
-    let totalDiscount = 0;
-    let totalMaster = 0;
-
-    rows.forEach(row => {
-        const price = parseFloat(row.querySelector('.price-input').value) || 0;
-        const discountPercent = parseFloat(row.querySelector('.discount-percent-input').value) || 0;
-        const percent = parseFloat(row.querySelector('.percent-input').value) || 0;
-        const discountAmount = price * (discountPercent / 100);
-        const finalPrice = price - discountAmount;
-        
-        totalFull += finalPrice;
-        totalDiscount += discountAmount;
-        totalMaster += finalPrice * (percent / 100);
-    });
-
-    document.getElementById('total-full-price').textContent = formatMoney(totalFull);
-    document.getElementById('total-master-earnings').textContent = formatMoney(totalMaster);
-    
-    const discountElement = document.getElementById('total-discount');
-    if (discountElement) {
-        if (totalDiscount > 0) {
-            discountElement.textContent = `Общая скидка: ${formatMoney(totalDiscount)}`;
-            discountElement.classList.remove('hidden');
-        } else {
-            discountElement.classList.add('hidden');
-        }
-    }
-}
-
-async function handleSaveVisit() {
-    const rows = document.querySelectorAll('.service-row');
-    const services = [];
-    let hasError = false;
-
-    rows.forEach(row => {
-        const select = row.querySelector('.service-select');
-        const priceInput = row.querySelector('.price-input');
-        const discountPercentInput = row.querySelector('.discount-percent-input');
-        const percentInput = row.querySelector('.percent-input');
-
-        if (!select.value || !priceInput.value) {
-            hasError = true;
-            return;
-        }
-
-        const serviceName = select.options[select.selectedIndex]?.text || 'Без названия';
-        services.push({
-            service_name: serviceName,
-            full_price: parseFloat(priceInput.value) || 0,
-            discount_percent: parseFloat(discountPercentInput.value) || 0,
-            master_percent: parseFloat(percentInput.value) || appState.data.settings.DEFAULT_PERCENT
-        });
-    });
-
-    if (hasError || services.length === 0) {
-        showToast('Заполните все услуги корректно');
-        return;
-    }
-
-    const serviceDate = document.getElementById('service-date').value;
-    if (!serviceDate) {
-        showToast('Введите дату и время');
-        return;
-    }
-
-    const visitData = {
-        service_date: serviceDate,
-        services: services
+    const payload = {
+      service_date: serviceDate,
+      salon_id: salonId,
+      client_id: clientId,
+      services: State.draftVisit.services.map(s => ({
+        service_name: s.service_name,
+        full_price: s.full_price,
+        discount_percent: s.discount_percent,
+        master_percent: s.master_percent
+      }))
     };
 
-    // ВОТ ЗДЕСЬ ДОБАВЬТЕ showLoading
-    showLoading('Сохранение визита...');
-    
-    try {
-        await apiCall('addVisit', visitData);
-        await fetchData();
-        hideLoading(); // ВОТ ЗДЕСЬ СКРЫВАЕМ
-        showToast('Визит сохранен!');
-        showScreen('dashboard');
-    } catch (error) {
-        hideLoading(); // ВОТ ЗДЕСЬ ТОЖЕ СКРЫВАЕМ ПРИ ОШИБКЕ
-        console.error('Ошибка сохранения визита:', error);
-        const pending = loadPendingSync();
-        pending.push(visitData);
-        savePendingSync(pending);
-        showToast('Ошибка сети. Визит сохранен локально.');
-        showScreen('dashboard');
-    }
-}
+    // Блокируем кнопку
+    btn.disabled = true;
+    btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
 
-function renderHistory() {
-    const { transactions, payouts } = appState.data;
-    const periods = getPeriodsSummary(transactions, payouts);
-    const content = document.getElementById('content');
+    // Оптимистичное обновление UI
+    const optimistic = {
+      id: clientId,
+      type: 'visit',
+      date: new Date().toISOString(),
+      service_date: serviceDate,
+      title: State.draftVisit.services[0].service_name,
+      amount: State.draftVisit.services.reduce((sum, s) => {
+        const finalPrice = s.full_price - (s.full_price * s.discount_percent / 100);
+        return sum + (finalPrice * s.master_percent / 100);
+      }, 0),
+      salon_id: salonId,
+      status: 'pending'
+    };
+    State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
 
-    content.innerHTML = `
-        <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
-            <div class="grid grid-cols-4 text-center text-sm">
-                <button onclick="showScreen('dashboard')" class="py-3 text-gray-600 hover:text-blue-600">📊</button>
-                <button onclick="showScreen('history')" class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">📅</button>
-                <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">📋</button>
-                <button onclick="showScreen('catalog')" class="py-3 text-gray-600 hover:text-blue-600">⚙️</button>
-            </div>
-        </div>
-
-        <div class="bg-white rounded-lg shadow p-4">
-            <h2 class="text-xl font-semibold mb-4">📅 Периоды</h2>
-            <div class="space-y-3">
-                ${periods.map(p => `
-                    <div class="border rounded-lg p-4 cursor-pointer hover:bg-gray-50 transition-colors" 
-                         onclick="showScreen('periodDetail', { periodId: '${p.period_id}' })">
-                        <div class="flex justify-between items-start">
-                            <div class="flex-grow">
-                                <p class="font-medium text-base">${p.label}</p>
-                                <p class="text-xs text-gray-500 mt-1">${getPeriodStatusText(p.status)}</p>
-                            </div>
-                            <div class="text-right">
-                                <p class="text-base font-semibold ${p.remaining_debt > 0 ? 'text-red-600' : 'text-green-600'}">
-                                    ${formatMoney(p.remaining_debt)}
-                                </p>
-                                <p class="text-xs text-gray-400 mt-1">${p.services_count} услуг</p>
-                            </div>
-                        </div>
-                        ${p.total_payouts > 0 ? `
-                            <div class="mt-3 pt-2 border-t text-xs text-gray-500 flex justify-between items-center">
-                                <span>💳 Выплачено: ${formatMoney(p.total_payouts)}</span>
-                                <span>${p.payouts_count} выплат(ы)</span>
-                            </div>
-                        ` : ''}
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-    `;
-}
-
-function renderPriceList() {
-    const { servicesCatalog } = appState.data;
-    const content = document.getElementById('content');
-
-    // Нормализуем данные
-    const safeCatalog = servicesCatalog.map(s => ({
-        service_name: String(s.service_name || 'Без названия'),
-        base_price: Number(s.base_price) || 0
-    }));
-
-    content.innerHTML = `
-    <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
-        <div class="grid grid-cols-4 text-center text-sm">
-            <button onclick="showScreen('dashboard')" class="py-3 text-gray-600 hover:text-blue-600">📊</button>
-            <button onclick="showScreen('history')" class="py-3 text-gray-600 hover:text-blue-600">📅</button>
-            <button onclick="showScreen('pricelist')"
-                class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">📋</button>
-            <button onclick="showScreen('catalog')" class="py-3 text-gray-600 hover:text-blue-600">⚙️</button>
-        </div>
-    </div>
-
-    <div class="bg-white rounded-lg shadow p-4">
-        <h2 class="text-xl font-semibold mb-4">Прайс-лист</h2>
-        <div class="space-y-2">
-            ${safeCatalog.map(s => `
-            <div class="flex justify-between items-center border-b py-3">
-                <span class="font-medium">${s.service_name}</span>
-                <span class="text-lg font-semibold">${formatMoney(s.base_price)}</span>
-            </div>
-            `).join('')}
-        </div>
-        <button onclick="showScreen('catalog')" class="w-full bg-gray-100 text-gray-700 py-3 rounded-lg mt-4 text-base">
-            Управлять услугами
-        </button>
-    </div>
-    `;
-}
-
-function renderCatalog() {
-    const { servicesCatalog, settings } = appState.data;
-    const content = document.getElementById('content');
-
-    // Проверяем и нормализуем данные
-    const safeCatalog = servicesCatalog.map(s => ({
-        service_id: String(s.service_id || ''),
-        service_name: String(s.service_name || 'Без названия'),
-        base_price: Number(s.base_price) || 0
-    }));
-
-    content.innerHTML = `
-    <div class="bg-white rounded-lg shadow mb-4 sticky top-0 z-30">
-        <div class="grid grid-cols-4 text-center text-sm">
-            <button onclick="showScreen('dashboard')" class="py-3 text-gray-600 hover:text-blue-600">📊</button>
-            <button onclick="showScreen('history')" class="py-3 text-gray-600 hover:text-blue-600">📅</button>
-            <button onclick="showScreen('pricelist')" class="py-3 text-gray-600 hover:text-blue-600">📋</button>
-            <button onclick="showScreen('catalog')"
-                class="py-3 font-semibold text-blue-600 border-b-2 border-blue-600">⚙️</button>
-        </div>
-    </div>
-
-    <div class="space-y-4">
-        <div class="bg-white rounded-lg shadow p-4">
-            <h2 class="text-xl font-semibold mb-4">Настройки</h2>
-            <div class="space-y-3">
-                <div>
-                    <label class="block text-sm text-gray-600 mb-1">Базовый процент мастера</label>
-                    <input type="number" id="default-percent" value="${settings.DEFAULT_PERCENT || 50}"
-                        class="w-full p-3 border border-gray-300 rounded text-base">
-                </div>
-                <button onclick="saveSettings()"
-                    class="w-full bg-blue-500 text-white py-3 rounded-lg hover:bg-blue-600 text-base">
-                    Сохранить настройки
-                </button>
-            </div>
-        </div>
-
-        <div class="bg-white rounded-lg shadow p-4">
-            <h2 class="text-xl font-semibold mb-4">Управление услугами</h2>
-            <div class="space-y-2">
-                ${safeCatalog.map(s => `
-                <div class="flex justify-between items-center border-b py-3">
-                    <div class="flex-grow">
-                        <p class="font-medium">${s.service_name}</p>
-                        <p class="text-sm text-gray-500">${formatMoney(s.base_price)}</p>
-                    </div>
-                    <div class="flex space-x-1">
-                        <button onclick="showCatalogEditModal('${s.service_id}', '${s.service_name.replace(/'/g, "\\'")}', ${s.base_price})"
-                            class="text-blue-500 hover:text-blue-700 text-xl px-3 py-2">✎</button>
-                        <button onclick="handleDeleteService('${s.service_id}')"
-                            class="text-red-500 hover:text-red-700 text-xl px-3 py-2">×</button>
-                    </div>
-                </div>
-                `).join('')}
-            </div>
-            <button onclick="showCatalogEditModal()"
-                class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 mt-4 text-base">
-                + Добавить услугу
-            </button>
-        </div>
-
-        <!-- НОВЫЙ БЛОК: Системные операции -->
-        <div class="bg-white rounded-lg shadow p-4">
-            <h2 class="text-xl font-semibold mb-4">Системные операции</h2>
-            <p class="text-sm text-gray-500 mb-3">Осторожно! Эти действия могут повлиять на данные.</p>
-            <button onclick="handleRevertLastAction()"
-                class="w-full bg-red-500 text-white py-3 rounded-lg hover:bg-red-600 text-base">
-                ↩️ Отменить последнее действие
-            </button>
-        </div>
-    </div>
-    `;
-}
-
-function showCatalogEditModal(serviceId = null, serviceName = '', basePrice = 0) {
-    const modal = document.getElementById('modal');
-    const modalContent = document.getElementById('modal-content');
-    const isEdit = serviceId !== null;
-
-    modalContent.innerHTML = `
-    <h3 class="text-lg font-semibold mb-4">${isEdit ? 'Изменить услугу' : 'Новая услуга'}</h3>
-    <input type="hidden" id="edit-service-id" value="${serviceId || ''}">
-    <div class="mb-3">
-        <label class="block text-sm text-gray-600 mb-1">Название</label>
-        <input type="text" id="edit-service-name" class="w-full p-3 border border-gray-300 rounded text-base"
-            value="${serviceName}">
-    </div>
-    <div class="mb-4">
-        <label class="block text-sm text-gray-600 mb-1">Базовая цена (₽)</label>
-        <input type="number" id="edit-service-price" class="w-full p-3 border border-gray-300 rounded text-base"
-            value="${basePrice}">
-    </div>
-    <button onclick="handleCatalogSave(${isEdit})"
-        class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 text-base font-medium">
-        Сохранить
-    </button>
-    `;
-    modal.classList.remove('hidden');
-}
-
-async function handleCatalogSave(isEdit) {
-    const serviceId = document.getElementById('edit-service-id').value;
-    const serviceName = document.getElementById('edit-service-name').value.trim();
-    const basePrice = parseFloat(document.getElementById('edit-service-price').value) || 0;
-
-    if (!serviceName) {
-        showToast('Введите название услуги');
-        return;
-    }
-
-    showLoading('Сохранение услуги...'); // ДОБАВЬТЕ
-    
-    try {
-        const action = isEdit ? 'update' : 'create';
-        await apiCall('manageCatalog', {
-            catalog_action: action,
-            service_id: serviceId,
-            service_name: serviceName,
-            base_price: basePrice
-        });
-        await fetchData();
-        hideLoading(); // ДОБАВЬТЕ
-        closeModal();
-        showScreen('catalog');
-        showToast(isEdit ? 'Услуга обновлена' : 'Услуга добавлена');
-    } catch (e) {
-        hideLoading(); // ДОБАВЬТЕ
-        showToast('Ошибка: ' + e.message);
-    }
-}
-
-async function handleDeleteService(serviceId) {
-    if (confirm('Удалить услугу из каталога? Исторические записи не будут затронуты.')) {
-        try {
-            await apiCall('manageCatalog', {
-                catalog_action: 'delete',
-                service_id: serviceId
-            });
-            await fetchData();
-            showScreen('catalog');
-            showToast('Услуга удалена');
-        } catch (e) {
-            showToast('Ошибка: ' + e.message);
-        }
-    }
-}
-
-async function saveSettings() {
-    const newPercent = parseInt(document.getElementById('default-percent').value);
-    if (newPercent > 0 && newPercent <= 100) {
-        showLoading('Сохранение настроек...');
-        
-        try {
-            await apiCall('manageCatalog', {
-                catalog_action: 'update_settings',
-                default_percent: newPercent
-            });
-            
-            appState.data.settings.DEFAULT_PERCENT = newPercent;
-            hideLoading();
-            showToast('Настройки сохранены');
-            showScreen('catalog');
-        } catch (e) {
-            hideLoading();
-            showToast('Ошибка: ' + e.message);
-        }
-    } else {
-        showToast('Процент должен быть от 1 до 100');
-    }
-}
-async function handleRevertLastAction() {
-    if (confirm('Отменить последнее действие? Это может повлиять на данные.')) {
-        showLoading('Отмена действия...');
-        
-        try {
-            const result = await apiCall('revertLastAction');
-            await fetchData();
-            hideLoading();
-            showToast(result.message || 'Действие отменено');
-            showScreen('catalog');
-        } catch (e) {
-            hideLoading();
-            showToast('Ошибка: ' + e.message);
-        }
-    }
-}
-
-function renderPeriodDetail(periodId) {
-    const { transactions, payouts, settings } = appState.data;
-    const periodTransactions = transactions.filter(t => t.period_id === periodId);
-    const periodPayouts = payouts.filter(p => p.period_id === periodId);
-
-    const totalServiceCost = periodTransactions.reduce((sum, t) => sum + (t.final_price || t.full_price || 0), 0);
-    const totalDiscount = periodTransactions.reduce((sum, t) => sum + (t.discount_amount || 0), 0);
-    const totalMasterEarnings = periodTransactions.reduce((sum, t) => sum + t.master_earnings, 0);
-    const totalPayouts = periodPayouts.reduce((sum, p) => sum + p.amount, 0);
-    const remainingDebt = totalMasterEarnings - totalPayouts;
-
-    const isCurrent = periodId === 'CURRENT';
-    const periodLabel = formatPeriodLabel(periodId, transactions);
-    
-    const groupedByDate = {};
-    periodTransactions.forEach(t => {
-        const date = new Date(t.service_date);
-        const dateKey = date.toLocaleDateString('ru-RU', { 
-            weekday: 'short', 
-            day: 'numeric', 
-            month: 'long' 
-        });
-        if (!groupedByDate[dateKey]) groupedByDate[dateKey] = [];
-        groupedByDate[dateKey].push(t);
+    // Добавляем в pending
+    addPending({
+      id: clientId,
+      type: 'add_visit',
+      payload: payload,
+      created_at: Date.now(),
+      attempts: 0
     });
 
-    const content = document.getElementById('content');
-    content.innerHTML = `
-        <div class="bg-white rounded-lg shadow p-4">
-            <div class="flex justify-between items-center mb-4">
-                <div>
-                    <h2 class="text-xl font-semibold">${periodLabel}</h2>
-                    <p class="text-sm text-gray-500">${periodTransactions.length} услуг</p>
-                </div>
-                <button onclick="showScreen('history')" class="text-blue-500 text-base px-3 py-2">←</button>
-            </div>
-            
-            <div class="bg-gray-50 rounded-lg p-4 mb-4">
-                <h3 class="font-semibold mb-3">📊 Итого</h3>
-                <div class="space-y-2 text-sm">
-                    <div class="flex justify-between">
-                        <span class="text-gray-600">Общая стоимость:</span>
-                        <span class="font-medium">${formatMoney(totalServiceCost)}</span>
-                    </div>
-                    ${totalDiscount > 0 ? `
-                        <div class="flex justify-between">
-                            <span class="text-gray-600">Скидки:</span>
-                            <span class="font-medium text-red-500">-${formatMoney(totalDiscount)}</span>
-                        </div>
-                    ` : ''}
-                    <div class="flex justify-between">
-                        <span class="text-gray-600">Заработок:</span>
-                        <span class="font-medium text-green-600">${formatMoney(totalMasterEarnings)}</span>
-                    </div>
-                    <div class="flex justify-between">
-                        <span class="text-gray-600">Выплаты:</span>
-                        <span class="font-medium text-blue-600">${formatMoney(totalPayouts)}</span>
-                    </div>
-                    <div class="flex justify-between border-t pt-2">
-                        <span class="font-semibold">Остаток:</span>
-                        <span class="font-bold ${remainingDebt > 0 ? 'text-red-600' : 'text-green-600'}">
-                            ${formatMoney(remainingDebt)}
-                        </span>
-                    </div>
-                </div>
-            </div>
-            
-            <div class="mb-4">
-                <h3 class="font-semibold mb-2">💳 Выплаты</h3>
-                ${periodPayouts.length > 0 ? periodPayouts.map(p => `
-                    <div class="flex justify-between items-center text-sm border-b py-2">
-                        <span class="text-gray-600">${new Date(p.date).toLocaleDateString('ru-RU')}</span>
-                        <span class="font-medium">${formatMoney(p.amount)}</span>
-                        ${p.comment ? `<span class="text-xs text-gray-400">${p.comment}</span>` : ''}
-                    </div>
-                `).join('') : '<p class="text-sm text-gray-400">Нет выплат</p>'}
-            </div>
-            
-            ${!isCurrent && remainingDebt > 0 ? `
-                <button onclick="showPayoutModal('${periodId}', ${remainingDebt})" 
-                        class="w-full bg-green-500 text-white py-3 rounded-lg hover:bg-green-600 mb-4 text-base">
-                    💰 Внести оплату
-                </button>
-            ` : ''}
-            
-            <div>
-                <h3 class="font-semibold mb-3">📅 Услуги по дням</h3>
-                ${Object.entries(groupedByDate).map(([date, services]) => `
-                    <div class="mb-4">
-                        <p class="text-sm text-gray-500 mb-2">${date}</p>
-                        <div class="space-y-2">
-                            ${services.map(s => `
-                                <div class="flex justify-between items-center text-sm border-b pb-2 ${isCurrent ? 'cursor-pointer hover:bg-gray-50' : ''}" 
-                                     ${isCurrent ? `onclick="editTransaction('${s.id}')"` : ''}>
-                                    <span class="flex-grow">${s.service_name}</span>
-                                    <span class="font-medium mx-2">${formatMoney(s.final_price || s.full_price || 0)}</span>
-                                    ${s.discount_percent > 0 ? `
-                                        <span class="text-red-500 text-xs">-${s.discount_percent}%</span>
-                                    ` : ''}
-                                    <span class="text-xs mx-2 ${s.master_percent !== settings.DEFAULT_PERCENT ? 'bg-yellow-100 text-yellow-800 px-2 py-1 rounded' : 'text-gray-400'}">
-                                        ${s.master_percent}%
-                                    </span>
-                                    <span class="text-green-600 font-medium">${formatMoney(s.master_earnings)}</span>
-                                    ${isCurrent ? '<span class="text-blue-500 ml-1">✎</span>' : ''}
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        </div>
-    `;
-}
-function showLoading(message = 'Загрузка...') {
-    const loadingOverlay = document.createElement('div');
-    loadingOverlay.id = 'loading-overlay';
-    loadingOverlay.style.cssText = `
-        position: fixed;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background-color: rgba(0,0,0,0.5);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        z-index: 100;
-    `;
-    loadingOverlay.innerHTML = `
-        <div class="bg-white rounded-lg p-4 text-center">
-            <div class="spinner"></div>
-            <p class="mt-2 text-sm">${message}</p>
-        </div>
-    `;
-    document.body.appendChild(loadingOverlay);
-}
-
-function hideLoading() {
-    const loadingOverlay = document.getElementById('loading-overlay');
-    if (loadingOverlay) {
-        loadingOverlay.remove();
-    }
-}
-function showPayoutModal(periodId, remainingDebt) {
-    const modal = document.getElementById('modal');
-    const modalContent = document.getElementById('modal-content');
-    modalContent.innerHTML = `
-        <h3 class="text-lg font-semibold mb-4">Внести оплату</h3>
-        <p class="mb-3">Остаток долга: <span class="font-bold">${formatMoney(remainingDebt)}</span></p>
-        
-        <button onclick="handleFullPayout('${periodId}', ${remainingDebt})" class="w-full bg-green-500 text-white py-3 rounded-lg mb-3 text-base">
-            Погасить полностью
-        </button>
-        
-        <div class="mb-3">
-            <label class="block text-sm text-gray-600 mb-1">Сумма частичной оплаты</label>
-            <input type="number" id="manual-amount" placeholder="Введите сумму" class="w-full p-3 border border-gray-300 rounded text-base mb-2">
-            <button onclick="handleManualPayout('${periodId}')" class="w-full bg-blue-500 text-white py-3 rounded-lg text-base">Внести</button>
-        </div>
-        
-        <div class="mb-3">
-            <label class="block text-sm text-gray-600 mb-1">Комментарий</label>
-            <input type="text" id="payout-comment" placeholder="Например: наличные из кассы" class="w-full p-3 border border-gray-300 rounded text-base">
-        </div>
-    `;
-    modal.classList.remove('hidden');
-}
-async function handleFullPayout(periodId, amount) {
-    const comment = document.getElementById('payout-comment')?.value || '';
-    await handlePayout(periodId, amount, comment);
-}
-
-async function handleManualPayout(periodId) {
-    const amount = parseFloat(document.getElementById('manual-amount').value);
-    const comment = document.getElementById('payout-comment')?.value || '';
-    if (amount > 0) {
-        await handlePayout(periodId, amount, comment);
-    } else {
-        showToast('Введите корректную сумму');
-    }
-}
-
-async function handlePayout(periodId, amount, comment = '') {
-    showLoading('Сохранение оплаты...'); // ДОБАВЬТЕ
-    
+    // Отправляем
     try {
-        await apiCall('addPayout', { 
-            period_id: periodId, 
-            amount: amount,
-            comment: comment 
-        });
-        await fetchData();
-        hideLoading(); // ДОБАВЬТЕ
-        closeModal();
-        showScreen('periodDetail', { periodId: periodId });
-        showToast('Оплата внесена');
+      await apiCall('addVisit', { payload });
+      // Успех — обновляем статус
+      optimistic.status = 'saved';
+      toast('Визит сохранён', 'success');
+      // Синхронизация в фоне
+      syncData(true);
+      App.go('home');
     } catch (e) {
-        hideLoading(); // ДОБАВЬТЕ
-        showToast('Ошибка: ' + e.message);
+      console.error('Save visit error:', e);
+      toast('Нет связи. Сохранено локально', 'error');
+      App.go('home');
+      setNetwork('offline');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="check"></i><span>Сохранить визит</span>';
+      lucide.createIcons();
+      State.draftVisit = { services: [] };
     }
-}
+  },
 
-// ===================== РАСЧЕТЫ =====================
-function calculateTotalDebt(transactions, payouts) {
-    const closedTransactionsTotal = transactions
-        .filter(t => t.period_id !== 'CURRENT')
-        .reduce((sum, t) => sum + t.master_earnings, 0);
-    const payoutsTotal = payouts.reduce((sum, p) => sum + p.amount, 0);
-    return Math.max(0, closedTransactionsTotal - payoutsTotal);
-}
+  updateVisitService(index, field, value) {
+    if (!State.draftVisit.services[index]) return;
+    State.draftVisit.services[index][field] = value;
+    renderVisitServices();
+  },
 
-function calculateCurrentPeriodEarnings(transactions) {
-    return transactions
-        .filter(t => t.period_id === 'CURRENT')
-        .reduce((sum, t) => sum + t.master_earnings, 0);
-}
+  removeVisitService(index) {
+    State.draftVisit.services.splice(index, 1);
+    renderVisitServices();
+  },
 
-function calculateCalendarEarnings(transactions, period) {
-    const now = new Date();
-    const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-    let filtered = [];
+  // ==================== ВЫПЛАТА ====================
+  async savePayout() {
+    const btn = document.getElementById('btn-save-payout');
+    const salonId = State.currentSalonId;
+    const amountInput = document.getElementById('payout-amount');
+    const commentInput = document.getElementById('payout-comment');
 
-    if (period === 'today') {
-        filtered = transactions.filter(t => new Date(t.service_date) >= todayStart);
-    } else if (period === 'month') {
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        filtered = transactions.filter(t => new Date(t.service_date) >= monthStart);
-    } else if (period === 'year') {
-        const yearStart = new Date(now.getFullYear(), 0, 1);
-        filtered = transactions.filter(t => new Date(t.service_date) >= yearStart);
+    const amount = parseMoney(amountInput.value);
+    if (!salonId) {
+      toast('Выберите салон', 'error');
+      return;
+    }
+    if (amount <= 0) {
+      toast('Введите сумму', 'error');
+      return;
     }
 
-    return filtered.reduce((sum, t) => sum + t.master_earnings, 0);
-}
-function formatPeriodLabel(periodId, transactions = []) {
-    if (periodId === 'CURRENT') {
-        const currentTransactions = transactions.filter(t => t.period_id === 'CURRENT');
-        if (currentTransactions.length > 0) {
-            const dates = currentTransactions.map(t => new Date(t.service_date));
-            const firstDate = new Date(Math.min(...dates));
-            return `Текущий (с ${firstDate.toLocaleDateString('ru-RU')})`;
-        }
-        return 'Текущий период';
-    }
-    
-    const periodTransactions = transactions.filter(t => t.period_id === periodId);
-    if (periodTransactions.length > 0) {
-        const dates = periodTransactions.map(t => new Date(t.service_date));
-        const minDate = new Date(Math.min(...dates));
-        const maxDate = new Date(Math.max(...dates));
-        
-        if (minDate.toDateString() === maxDate.toDateString()) {
-            return minDate.toLocaleDateString('ru-RU');
-        }
-        
-        return `${minDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'numeric'})} - ${maxDate.toLocaleDateString('ru-RU', {day: 'numeric', month: 'numeric'})}`;
-    }
-    
-    return periodId.replace('PERIOD_', '').replace(/_/g, ' ');
-}
+    const clientId = uuid();
+    const payload = {
+      salon_id: salonId,
+      amount: amount,
+      comment: commentInput.value.trim(),
+      client_id: clientId
+    };
 
-function getPeriodStatusText(status) {
-    switch(status) {
-        case 'Открыт': return '🔵 Открыт';
-        case 'Оплачен': return '✅ Оплачен';
-        case 'Частично оплачен': return '🟡 Частично оплачен';
-        case 'Ожидает оплаты': return '🔴 Ожидает оплаты';
-        default: return status;
-    }
-}
-function getPeriodsSummary(transactions, payouts) {
-    const periodsMap = new Map();
-    
-    periodsMap.set('CURRENT', {
-        period_id: 'CURRENT',
-        label: formatPeriodLabel('CURRENT', transactions),
-        services_count: 0,
-        payouts_count: 0,
-        total_payouts: 0,
-        remaining_debt: 0,
-        status: 'Открыт'
+    btn.disabled = true;
+    btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
+
+    // Оптимистично
+    const optimistic = {
+      id: clientId,
+      type: 'payout',
+      date: new Date().toISOString(),
+      title: 'Получено',
+      amount: -amount,
+      salon_id: salonId,
+      status: 'pending'
+    };
+    State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
+
+    addPending({
+      id: clientId,
+      type: 'add_payout',
+      payload: payload,
+      created_at: Date.now(),
+      attempts: 0
     });
 
+    try {
+      await apiCall('addPayout', { payload });
+      optimistic.status = 'saved';
+      toast('Выплата сохранена', 'success');
+      syncData(true);
+      App.go('home');
+    } catch (e) {
+      console.error('Save payout error:', e);
+      toast('Нет связи. Сохранено локально', 'error');
+      App.go('home');
+      setNetwork('offline');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="check"></i><span>Подтвердить</span>';
+      lucide.createIcons();
+    }
+  },
+
+  setPayoutAmount(value) {
+    const input = document.getElementById('payout-amount');
+    if (input) {
+      if (value === 'all') {
+        const salon = App.getCurrentSalon();
+        input.value = salon ? Math.round(salon.debt) : 0;
+      } else {
+        input.value = value;
+      }
+    }
+  },
+
+  // ==================== САЛОНЫ ====================
+  switchSalon(salonId) {
+    State.currentSalonId = salonId;
+    Storage.set(STORAGE_KEYS.SALON, salonId);
+    if (State.currentScreen === 'home') {
+      renderHome();
+    }
+  },
+
+  getCurrentSalon() {
+    return State.data.salons.find(s => s.salon_id === State.currentSalonId) || State.data.salons[0];
+  },
+
+  // ==================== НАСТРОЙКИ ====================
+  showProfile() {
+    const name = State.data.master.name || 'Мастер';
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Профиль</div>
+      <div class="input-group">
+        <label class="input-label">Имя</label>
+        <input type="text" class="input" value="${escapeHtml(name)}" disabled>
+      </div>
+      <p class="text-small text-muted">Изменить имя можно в Google Таблице (лист Master)</p>
+    `);
+  },
+
+  showDataStatus() {
+    const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
+    const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+    const diff = lastSync ? Math.round((Date.now() - lastSync) / 1000) : 0;
+    const timeAgo = diff < 60 ? `${diff} сек назад` :
+                    diff < 3600 ? `${Math.round(diff / 60)} мин назад` :
+                    `${Math.round(diff / 3600)} ч назад`;
+
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Состояние данных</div>
+      <div class="report-row">
+        <span class="report-label">Последняя синхронизация</span>
+        <span class="report-value" style="font-size: 15px;">${timeAgo}</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Не отправлено</span>
+        <span class="report-value ${pending.length > 0 ? 'danger' : 'success'}" style="font-size: 15px;">${pending.length}</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Статус</span>
+        <span class="report-value" style="font-size: 15px;">${State.network === 'online' ? 'Онлайн' : State.network === 'syncing' ? 'Синхронизация' : 'Офлайн'}</span>
+      </div>
+      <button class="btn btn-primary mt-16" onclick="App.forceRefresh()">
+        <i data-lucide="refresh-cw"></i>
+        <span>Обновить сейчас</span>
+      </button>
+      <button class="btn btn-secondary" onclick="App.sendPending()" ${pending.length === 0 ? 'disabled' : ''}>
+        <i data-lucide="upload"></i>
+        <span>Отправить ожидающие (${pending.length})</span>
+      </button>
+    `);
+  },
+
+  async forceRefresh() {
+    closeModal();
+    await flushPending();
+    await syncData();
+    toast('Обновлено', 'success');
+    App.go(State.currentScreen);
+  },
+
+  async sendPending() {
+    closeModal();
+    await flushPending();
+    const remaining = Storage.get(STORAGE_KEYS.PENDING, []);
+    if (remaining.length === 0) {
+      toast('Все отправлено', 'success');
+    } else {
+      toast(`Не удалось отправить ${remaining.length}`, 'error');
+    }
+  },
+
+  logout() {
+    if (!confirm('Выйти из приложения? Данные на устройстве будут удалены.')) return;
+    Storage.remove(STORAGE_KEYS.TOKEN);
+    Storage.remove(STORAGE_KEYS.DATA);
+    Storage.remove(STORAGE_KEYS.DATA + '_full');
+    Storage.remove(STORAGE_KEYS.SALON);
+    Storage.remove(STORAGE_KEYS.PENDING);
+    Storage.remove(STORAGE_KEYS.LAST_SYNC);
+    State.token = '';
+    State.data = {
+      master: { name: '', phone: '' },
+      salons: [],
+      totalDebt: 0,
+      recentOps: [],
+      services: {}
+    };
+    State.fullData = null;
+    State.currentSalonId = '';
+    App.go('auth');
+  },
+
+  // ==================== УПРАВЛЕНИЕ САЛОНАМИ ====================
+  async saveSalon() {
+    const nameInput = document.getElementById('salon-edit-name');
+    const percentInput = document.getElementById('salon-edit-percent');
+    const name = nameInput.value.trim();
+    const percent = parseInt(percentInput.value) || 50;
+
+    if (!name) {
+      toast('Введите название', 'error');
+      return;
+    }
+
+    const btn = document.getElementById('btn-save-salon');
+    btn.disabled = true;
+    btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
+
+    try {
+      if (State.editingSalonId) {
+        await apiCall('manageSalon', {
+          salon_action: 'update',
+          payload: { salon_id: State.editingSalonId, name, default_percent: percent }
+        });
+      } else {
+        await apiCall('manageSalon', {
+          salon_action: 'create',
+          payload: { name, default_percent: percent }
+        });
+      }
+      await syncData();
+      toast('Сохранено', 'success');
+      App.go('salons');
+    } catch (e) {
+      toast('Ошибка: ' + e.message, 'error');
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
+      lucide.createIcons();
+    }
+  },
+
+  async deleteSalon() {
+    if (!State.editingSalonId) return;
+    if (!confirm('Удалить салон? Данные останутся, но скроются из интерфейса.')) return;
+
+    try {
+      await apiCall('manageSalon', {
+        salon_action: 'delete',
+        payload: { salon_id: State.editingSalonId }
+      });
+      await syncData();
+      toast('Удалено', 'success');
+      App.go('salons');
+    } catch (e) {
+      toast('Ошибка: ' + e.message, 'error');
+    }
+  },
+
+  editSalon(salonId) {
+    State.editingSalonId = salonId;
+    App.go('salon-edit');
+  },
+
+  // ==================== УПРАВЛЕНИЕ УСЛУГАМИ ====================
+  showServicesManage() {
+    const salons = State.data.salons;
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Прайс-лист</div>
+      <p class="text-small text-muted mb-16">Выберите салон для настройки</p>
+      ${salons.map(s => `
+        <div class="settings-row" onclick="App.editSalon('${s.salon_id}')">
+          <div class="settings-icon"><i data-lucide="building-2"></i></div>
+          <div class="settings-content">
+            <div class="settings-title">${escapeHtml(s.name)}</div>
+            <div class="settings-subtitle">Процент: ${s.default_percent}%</div>
+          </div>
+          <i data-lucide="chevron-right" class="settings-chevron"></i>
+        </div>
+      `).join('')}
+    `);
+  },
+
+  openServicePickerForSalon() {
+    renderServicePicker('salon-edit');
+    showScreen('service-picker');
+  },
+
+  async saveSalonService(service) {
+    try {
+      await apiCall('manageService', {
+        service_action: 'create',
+        payload: {
+          salon_id: State.editingSalonId,
+          service_name: service.name,
+          base_price: service.price
+        }
+      });
+      await syncData();
+      toast('Услуга добавлена', 'success');
+      App.go('salon-edit');
+    } catch (e) {
+      toast('Ошибка: ' + e.message, 'error');
+    }
+  },
+
+  closeModal() {
+    const modal = document.getElementById('modal');
+    const backdrop = document.getElementById('modal-backdrop');
+    if (modal) modal.classList.remove('show');
+    if (backdrop) backdrop.classList.remove('show');
+  }
+};
+
+// ==================== ПОКАЗ ЭКРАНА ====================
+function showScreen(name) {
+  document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+  const el = document.getElementById('screen-' + name);
+  if (el) el.classList.add('active');
+  window.scrollTo(0, 0);
+}
+
+function updateBottomNav(screen) {
+  const nav = document.getElementById('bottom-nav');
+  if (!nav) return;
+  // Скрываем навигацию на некоторых экранах
+  const hideNav = ['add-visit', 'payout', 'salon-edit', 'service-picker', 'auth', 'loading'];
+  if (hideNav.includes(screen)) {
+    nav.style.display = 'none';
+    return;
+  }
+  nav.style.display = 'flex';
+  nav.querySelectorAll('.nav-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.nav === screen);
+  });
+}
+
+// ==================== РЕНДЕР: ГЛАВНАЯ ====================
+function renderHome() {
+  // Общая сумма
+  const debtEl = document.getElementById('total-debt');
+  if (debtEl) {
+    debtEl.textContent = formatMoney(State.data.totalDebt);
+    debtEl.classList.toggle('zero', State.data.totalDebt <= 0);
+  }
+
+  // Список салонов
+  const salonList = document.getElementById('salon-list');
+  if (salonList) {
+    if (State.data.salons.length <= 1) {
+      salonList.style.display = 'none';
+    } else {
+      salonList.style.display = 'flex';
+      salonList.innerHTML = State.data.salons.map(s => `
+        <div class="salon-item ${s.salon_id === State.currentSalonId ? 'active' : ''}" onclick="App.switchSalon('${s.salon_id}')">
+          <div class="salon-item-name">
+            <span class="salon-dot"></span>
+            <span>${escapeHtml(s.name)}</span>
+          </div>
+          <div class="salon-item-amount">${formatMoney(s.debt)}</div>
+        </div>
+      `).join('');
+    }
+  }
+
+  // Последние операции
+  const opsEl = document.getElementById('recent-ops');
+  if (opsEl) {
+    const ops = (State.data.recentOps || []).slice(0, 5);
+    if (ops.length === 0) {
+      opsEl.innerHTML = `
+        <div class="empty-state">
+          <i data-lucide="inbox"></i>
+          <div class="empty-state-text">Пока нет операций</div>
+        </div>
+      `;
+    } else {
+      opsEl.innerHTML = ops.map(op => renderOpItem(op)).join('');
+    }
+  }
+
+  lucide.createIcons();
+}
+
+function renderOpItem(op) {
+  const isPayout = op.type === 'payout';
+  const statusClass = op.status === 'saved' ? 'check' :
+                     op.status === 'pending' ? 'pending' : 'error';
+  const statusIcon = op.status === 'saved' ? 'check' :
+                    op.status === 'pending' ? 'clock' : 'alert-circle';
+  const salon = State.data.salons.find(s => s.salon_id === op.salon_id);
+  const salonName = salon ? salon.name : '';
+  const date = op.service_date || op.date;
+  const meta = `${salonName} · ${formatDate(date)} ${formatTime(date)}`;
+
+  return `
+    <div class="op-item" onclick="App.go('journal')">
+      <div class="op-status ${isPayout ? 'money' : statusClass}">
+        <i data-lucide="${isPayout ? 'banknote' : statusIcon}"></i>
+      </div>
+      <div class="op-content">
+        <div class="op-title">${escapeHtml(op.title)}</div>
+        <div class="op-meta">${escapeHtml(meta)}</div>
+      </div>
+      <div class="op-amount ${isPayout ? 'expense' : 'income'}">
+        ${isPayout ? '−' : '+'}${formatMoney(Math.abs(op.amount))}
+      </div>
+    </div>
+  `;
+}
+
+// ==================== РЕНДЕР: ДОБАВИТЬ ВИЗИТ ====================
+function renderAddVisit() {
+  const salon = App.getCurrentSalon();
+  const salonEl = document.getElementById('add-visit-salon');
+  if (salonEl && salon) salonEl.textContent = salon.name;
+
+  const dateInput = document.getElementById('visit-date');
+  if (dateInput && !dateInput.value) {
+    dateInput.value = formatDateTimeLocal();
+  }
+
+  renderVisitServices();
+}
+
+function renderVisitServices() {
+  const container = document.getElementById('visit-services');
+  if (!container) return;
+
+  const services = State.draftVisit.services;
+
+  if (services.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state" style="padding: 20px;">
+        <div class="empty-state-text">Добавьте услуги</div>
+      </div>
+    `;
+  } else {
+    container.innerHTML = services.map((s, i) => {
+      const finalPrice = s.full_price - (s.full_price * s.discount_percent / 100);
+      return `
+        <div class="service-item">
+          <div class="service-item-main">
+            <div class="service-name">${escapeHtml(s.service_name)}</div>
+            <div class="service-meta">
+              ${formatMoney(s.full_price)} · скидка ${s.discount_percent}% · ${s.master_percent}%
+            </div>
+          </div>
+          <button class="icon-btn" onclick="App.removeVisitService(${i})">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+      `;
+    }).join('');
+  }
+
+  updateVisitTotals();
+  lucide.createIcons();
+}
+
+function updateVisitTotals() {
+  const services = State.draftVisit.services;
+  let total = 0;
+  let earnings = 0;
+
+  services.forEach(s => {
+    const finalPrice = s.full_price - (s.full_price * s.discount_percent / 100);
+    total += finalPrice;
+    earnings += finalPrice * (s.master_percent / 100);
+  });
+
+  const totalEl = document.getElementById('visit-total');
+  const earnEl = document.getElementById('visit-earnings');
+  if (totalEl) totalEl.textContent = formatMoney(total);
+  if (earnEl) earnEl.textContent = formatMoney(earnings);
+}
+
+// ==================== РЕНДЕР: ВЫПЛАТА ====================
+function renderPayout() {
+  const salon = App.getCurrentSalon();
+  if (!salon) return;
+
+  const salonEl = document.getElementById('payout-salon');
+  const debtEl = document.getElementById('payout-debt');
+  const amountInput = document.getElementById('payout-amount');
+
+  if (salonEl) salonEl.textContent = salon.name;
+  if (debtEl) debtEl.textContent = formatMoney(salon.debt);
+  if (amountInput) amountInput.value = '';
+
+  // Быстрые суммы
+  const quickEl = document.getElementById('quick-amounts');
+  if (quickEl) {
+    const debt = salon.debt;
+    const amounts = [];
+    if (debt > 0) {
+      if (debt >= 1000) amounts.push(1000);
+      if (debt >= 2000) amounts.push(2000);
+      if (debt >= 5000) amounts.push(5000);
+    }
+    quickEl.innerHTML = [
+      ...amounts.map(a => `<button class="quick-amount" onclick="App.setPayoutAmount(${a})">${a.toLocaleString('ru-RU')}</button>`),
+      debt > 0 ? `<button class="quick-amount" onclick="App.setPayoutAmount('all')">Всё</button>` : ''
+    ].join('');
+  }
+
+  lucide.createIcons();
+}
+
+// ==================== РЕНДЕР: ЖУРНАЛ ====================
+function renderJournal() {
+  if (!State.fullData) {
+    // Загружаем если нет
+    apiCall('getFullData').then(data => {
+      if (data.success) {
+        State.fullData = {
+          transactions: data.transactions,
+          payouts: data.payouts,
+          salons: data.salons
+        };
+        Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+        renderJournal();
+      }
+    }).catch(() => {});
+    return;
+  }
+
+  // Заполняем фильтр салонов
+  const salonFilter = document.getElementById('journal-salon-filter');
+  if (salonFilter && salonFilter.options.length <= 1) {
+    salonFilter.innerHTML = '<option value="all">Все салоны</option>' +
+      State.data.salons.map(s => `<option value="${s.salon_id}">${escapeHtml(s.name)}</option>`).join('');
+  }
+
+  renderJournalList();
+}
+
+function renderJournalList() {
+  const container = document.getElementById('journal-list');
+  if (!container || !State.fullData) return;
+
+  const filter = State.journalFilter;
+  let items = [];
+
+  // Транзакции
+  if (filter.type === 'all' || filter.type === 'visit') {
+    State.fullData.transactions.forEach(t => {
+      if (filter.salon !== 'all' && t.salon_id !== filter.salon) return;
+      items.push({
+        id: t.id,
+        type: 'visit',
+        date: t.service_date || t.created_at,
+        title: t.service_name,
+        amount: t.master_earnings,
+        salon_id: t.salon_id
+      });
+    });
+  }
+
+  // Выплаты
+  if (filter.type === 'all' || filter.type === 'payout') {
+    State.fullData.payouts.forEach(p => {
+      if (filter.salon !== 'all' && p.salon_id !== filter.salon) return;
+      items.push({
+        id: p.id,
+        type: 'payout',
+        date: p.date,
+        title: 'Получено' + (p.comment ? ': ' + p.comment : ''),
+        amount: -p.amount,
+        salon_id: p.salon_id
+      });
+    });
+  }
+
+  // Сортировка по убыванию даты
+  items.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  // Ограничиваем 100
+  const limited = items.slice(0, 100);
+
+  if (limited.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="inbox"></i>
+        <div class="empty-state-text">Нет операций</div>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  // Группировка по дням
+  const grouped = {};
+  limited.forEach(item => {
+    const key = formatDateFull(item.date);
+    if (!grouped[key]) grouped[key] = [];
+    grouped[key].push(item);
+  });
+
+  container.innerHTML = Object.entries(grouped).map(([date, ops]) => `
+    <div class="date-group">${date}</div>
+    ${ops.map(op => renderOpItem(op)).join('')}
+  `).join('');
+
+  lucide.createIcons();
+}
+
+// ==================== РЕНДЕР: ОТЧЁТЫ ====================
+function renderReports() {
+  if (!State.fullData) {
+    apiCall('getFullData').then(data => {
+      if (data.success) {
+        State.fullData = {
+          transactions: data.transactions,
+          payouts: data.payouts,
+          salons: data.salons
+        };
+        Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+        renderReports();
+      }
+    }).catch(() => {});
+    return;
+  }
+
+  const salonFilter = document.getElementById('reports-salon-filter');
+  if (salonFilter && salonFilter.options.length <= 1) {
+    salonFilter.innerHTML = '<option value="all">Все салоны</option>' +
+      State.data.salons.map(s => `<option value="${s.salon_id}">${escapeHtml(s.name)}</option>`).join('');
+  }
+
+  renderReportsContent();
+}
+
+function renderReportsContent() {
+  const filter = State.reportsFilter;
+  const period = filter.period;
+
+  // Определяем диапазон
+  const now = new Date();
+  let startDate;
+  if (period === 'today') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  } else if (period === 'week') {
+    startDate = new Date(now);
+    startDate.setDate(now.getDate() - 7);
+  } else if (period === 'month') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+  } else if (period === 'year') {
+    startDate = new Date(now.getFullYear(), 0, 1);
+  }
+
+  // Фильтруем
+  const filterBySalon = (arr) => filter.salon === 'all' ? arr : arr.filter(x => x.salon_id === filter.salon);
+  const filterByDate = (arr) => arr.filter(x => new Date(x.service_date || x.date) >= startDate);
+
+  const transactions = filterByDate(filterBySalon(State.fullData.transactions));
+  const payouts = filterByDate(filterBySalon(State.fullData.payouts));
+
+  const earned = transactions.reduce((sum, t) => sum + t.master_earnings, 0);
+  const received = payouts.reduce((sum, p) => sum + p.amount, 0);
+  const remaining = earned - received;
+
+  // Сводка
+  const summaryEl = document.getElementById('reports-summary');
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <div class="report-row">
+        <span class="report-label">Заработала</span>
+        <span class="report-value success">${formatMoney(earned)}</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Получила</span>
+        <span class="report-value primary">${formatMoney(received)}</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Осталось</span>
+        <span class="report-value ${remaining > 0 ? 'danger' : 'success'}">${formatMoney(remaining)}</span>
+      </div>
+    `;
+  }
+
+  // По салонам
+  const bySalonEl = document.getElementById('reports-by-salon');
+  if (bySalonEl) {
+    if (filter.salon !== 'all') {
+      bySalonEl.innerHTML = '';
+    } else {
+      bySalonEl.innerHTML = State.data.salons.map(salon => {
+        const sT = transactions.filter(t => t.salon_id === salon.salon_id);
+        const sP = payouts.filter(p => p.salon_id === salon.salon_id);
+        const sEarned = sT.reduce((sum, t) => sum + t.master_earnings, 0);
+        const sReceived = sP.reduce((sum, p) => sum + p.amount, 0);
+        const sRemaining = sEarned - sReceived;
+
+        if (sEarned === 0 && sReceived === 0) return '';
+
+        return `
+          <div class="card">
+            <div style="font-weight: 600; margin-bottom: 12px;">${escapeHtml(salon.name)}</div>
+            <div class="total-row">
+              <span class="total-row-label">Заработала</span>
+              <span class="total-row-value">${formatMoney(sEarned)}</span>
+            </div>
+            <div class="total-row">
+              <span class="total-row-label">Получила</span>
+              <span class="total-row-value">${formatMoney(sReceived)}</span>
+            </div>
+            <div class="total-row">
+              <span class="total-row-label">Остаток</span>
+              <span class="total-row-value ${sRemaining > 0 ? 'income' : ''}">${formatMoney(sRemaining)}</span>
+            </div>
+          </div>
+        `;
+      }).join('');
+    }
+  }
+
+  // Топ услуг
+  const topEl = document.getElementById('reports-top-services');
+  if (topEl) {
+    const counts = {};
     transactions.forEach(t => {
-        if (!periodsMap.has(t.period_id)) {
-            periodsMap.set(t.period_id, {
-                period_id: t.period_id,
-                label: formatPeriodLabel(t.period_id, transactions),
-                services_count: 0,
-                payouts_count: 0,
-                total_payouts: 0,
-                remaining_debt: 0,
-                status: 'Ожидает оплаты'
-            });
-        }
-        const period = periodsMap.get(t.period_id);
-        period.services_count++;
-        period.remaining_debt += (t.master_earnings || 0);
+      counts[t.service_name] = (counts[t.service_name] || 0) + 1;
     });
+    const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
-    payouts.forEach(p => {
-        if (!periodsMap.has(p.period_id)) {
-            periodsMap.set(p.period_id, {
-                period_id: p.period_id,
-                label: formatPeriodLabel(p.period_id, transactions),
-                services_count: 0,
-                payouts_count: 0,
-                total_payouts: 0,
-                remaining_debt: 0,
-                status: 'Ожидает оплаты'
-            });
-        }
-        const period = periodsMap.get(p.period_id);
-        period.payouts_count++;
-        period.total_payouts += p.amount;
-        period.remaining_debt -= p.amount;
-    });
+    if (sorted.length === 0) {
+      topEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Нет данных</div>';
+    } else {
+      topEl.innerHTML = sorted.map(([name, count]) => `
+        <div class="report-row">
+          <span class="report-label">${escapeHtml(name)}</span>
+          <span class="report-value" style="font-size: 16px;">${count} раз</span>
+        </div>
+      `).join('');
+    }
+  }
+}
 
-    periodsMap.forEach(period => {
-        if (period.period_id === 'CURRENT') {
-            period.status = 'Открыт';
+// ==================== РЕНДЕР: НАСТРОЙКИ ====================
+function renderSettings() {
+  const nameEl = document.getElementById('settings-name');
+  if (nameEl) nameEl.textContent = State.data.master.name || 'Мастер';
+
+  const salonsEl = document.getElementById('settings-salons-count');
+  if (salonsEl) salonsEl.textContent = `${State.data.salons.length} из 3`;
+
+  const syncEl = document.getElementById('settings-sync');
+  if (syncEl) {
+    const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
+    const diff = lastSync ? Math.round((Date.now() - lastSync) / 1000) : 0;
+    const timeAgo = diff < 60 ? 'только что' :
+                    diff < 3600 ? `${Math.round(diff / 60)} мин назад` :
+                    `${Math.round(diff / 3600)} ч назад`;
+    syncEl.textContent = `Синхронизация: ${timeAgo}`;
+  }
+}
+
+// ==================== РЕНДЕР: САЛОНЫ ====================
+function renderSalons() {
+  const container = document.getElementById('salons-list');
+  if (!container) return;
+
+  container.innerHTML = State.data.salons.map(s => `
+    <div class="salon-card" onclick="App.editSalon('${s.salon_id}')">
+      <div class="salon-card-header">
+        <div class="salon-card-name">${escapeHtml(s.name)}</div>
+        <div class="salon-card-percent">${s.default_percent}%</div>
+      </div>
+      <div class="salon-card-services">Нажмите для настройки прайса</div>
+    </div>
+  `).join('');
+
+  const btn = document.getElementById('btn-add-salon');
+  if (btn) {
+    btn.style.display = State.data.salons.length >= 3 ? 'none' : 'flex';
+  }
+
+  lucide.createIcons();
+}
+
+// ==================== РЕНДЕР: РЕДАКТИРОВАНИЕ САЛОНА ====================
+function renderSalonEdit() {
+  const isNew = !State.editingSalonId;
+  const salon = isNew ? { name: '', default_percent: 50 } : State.data.salons.find(s => s.salon_id === State.editingSalonId);
+
+  const titleEl = document.getElementById('salon-edit-title');
+  const nameEl = document.getElementById('salon-edit-name');
+  const percentEl = document.getElementById('salon-edit-percent');
+  const deleteBtn = document.getElementById('btn-delete-salon');
+
+  if (titleEl) titleEl.textContent = isNew ? 'Новый салон' : escapeHtml(salon.name);
+  if (nameEl) nameEl.value = salon.name || '';
+  if (percentEl) percentEl.value = salon.default_percent || 50;
+  if (deleteBtn) deleteBtn.style.display = isNew || State.data.salons.length <= 1 ? 'none' : 'flex';
+
+  // Список услуг
+  const servicesEl = document.getElementById('salon-services-list');
+  if (servicesEl && !isNew) {
+    // Загружаем услуги для этого салона
+    apiCall('getServices', { salon_id: salon.salon_id }).then(data => {
+      if (data.success && data.services) {
+        if (data.services.length === 0) {
+          servicesEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Нет услуг. Добавьте первую.</div>';
         } else {
-            if (period.remaining_debt <= 0) {
-                period.status = 'Оплачен';
-            } else if (period.payouts_count > 0) {
-                period.status = 'Частично оплачен';
-            } else {
-                period.status = 'Ожидает оплаты';
-            }
+          servicesEl.innerHTML = data.services.map(s => `
+            <div class="service-item">
+              <div class="service-item-main">
+                <div class="service-name">${escapeHtml(s.service_name)}</div>
+              </div>
+              <div class="service-price">${formatMoney(s.base_price)}</div>
+            </div>
+          `).join('');
         }
-    });
+      }
+    }).catch(() => {});
+  } else if (servicesEl) {
+    servicesEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Сохраните салон, потом добавьте услуги</div>';
+  }
 
-    return Array.from(periodsMap.values()).sort((a, b) => {
-        if (a.period_id === 'CURRENT') return -1;
-        if (b.period_id === 'CURRENT') return 1;
-        return b.period_id.localeCompare(a.period_id);
-    });
+  lucide.createIcons();
 }
 
-function getPeriodDateRange(transactions) {
-    if (transactions.length === 0) return 'Нет данных';
-    const dates = transactions.map(t => new Date(t.service_date));
-    const minDate = new Date(Math.min(...dates));
-    const maxDate = new Date(Math.max(...dates));
-    return `${minDate.toLocaleDateString('ru-RU')} - ${maxDate.toLocaleDateString('ru-RU')}`;
-}
+// ==================== РЕНДЕР: ВЫБОР УСЛУГ ====================
+let servicePickerMode = 'visit';
 
-// ===================== УТИЛИТЫ =====================
-function formatMoney(amount) {
-    return new Intl.NumberFormat('ru-RU', {
-        style: 'currency',
-        currency: 'RUB',
-        maximumFractionDigits: 0
-    }).format(amount);
-}
+function renderServicePicker(mode) {
+  servicePickerMode = mode;
+  const salon = mode === 'salon-edit' ? 
+    State.data.salons.find(s => s.salon_id === State.editingSalonId) :
+    App.getCurrentSalon();
 
-function getCurrentDateTimeLocal() {
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = String(now.getMonth() + 1).padStart(2, '0');
-    const day = String(now.getDate()).padStart(2, '0');
-    const hours = String(now.getHours()).padStart(2, '0');
-    const minutes = String(now.getMinutes()).padStart(2, '0');
-    return `${year}-${month}-${day}T${hours}:${minutes}`;
-}
+  const titleEl = document.getElementById('service-picker-title');
+  if (titleEl) titleEl.textContent = mode === 'salon-edit' ? 'Добавить услугу в прайс' : 'Выберите услугу';
 
-function editTransaction(transactionId) {
-    const { transactions, servicesCatalog } = appState.data;
-    const transaction = transactions.find(t => t.id === transactionId);
+  const listEl = document.getElementById('service-picker-list');
+  if (!listEl) return;
 
-    if (!transaction) {
-        showToast('Транзакция не найдена');
-        return;
-    }
-
-    const modal = document.getElementById('modal');
-    const modalContent = document.getElementById('modal-content');
-    modalContent.innerHTML = `
-    <h3 class="text-lg font-semibold mb-4">Редактировать услугу</h3>
-    <div class="mb-3">
-        <label class="block text-sm text-gray-600 mb-1">Услуга</label>
-        <select id="edit-transaction-service" class="w-full p-3 border border-gray-300 rounded text-base">
-            ${servicesCatalog.map(s => `
-            <option value="${s.service_name}" ${s.service_name === transaction.service_name ? 'selected' : ''}>
-                ${s.service_name}</option>
-            `).join('')}
-        </select>
-    </div>
-    <div class="mb-3">
-        <label class="block text-sm text-gray-600 mb-1">Цена (₽)</label>
-        <input type="number" id="edit-transaction-price" class="w-full p-3 border border-gray-300 rounded text-base"
-            value="${transaction.full_price || 0}">
-    </div>
-    <div class="mb-3">
-        <label class="block text-sm text-gray-600 mb-1">Скидка (₽)</label>
-        <input type="number" id="edit-transaction-discount" class="w-full p-3 border border-gray-300 rounded text-base"
-            value="${transaction.discount || 0}">
-    </div>
-    <div class="mb-4">
-        <label class="block text-sm text-gray-600 mb-1">Процент</label>
-        <input type="number" id="edit-transaction-percent" class="w-full p-3 border border-gray-300 rounded text-base"
-            value="${transaction.master_percent || 50}">
-    </div>
-    <div class="flex space-x-2">
-        <button onclick="saveTransactionEdit('${transactionId}')"
-            class="flex-grow bg-green-500 text-white py-3 rounded-lg text-base">Сохранить</button>
-        <button onclick="deleteTransaction('${transactionId}')"
-            class="bg-red-500 text-white px-4 py-3 rounded-lg text-base">Удалить</button>
-    </div>
+  if (mode === 'salon-edit') {
+    // В режиме редактирования салона — форма создания новой услуги
+    listEl.innerHTML = `
+      <div class="input-group">
+        <label class="input-label">Название</label>
+        <input type="text" id="new-service-name" class="input" placeholder="Наращивание 1D">
+      </div>
+      <div class="input-group">
+        <label class="input-label">Цена</label>
+        <input type="number" id="new-service-price" class="input" placeholder="3200">
+      </div>
+      <button class="btn btn-primary" onclick="App.saveSalonService({ name: document.getElementById('new-service-name').value, price: parseInt(document.getElementById('new-service-price').value) || 0 })">
+        <i data-lucide="check"></i>
+        <span>Сохранить</span>
+      </button>
     `;
-    modal.classList.remove('hidden');
-}
+    lucide.createIcons();
+    return;
+  }
 
-async function saveTransactionEdit(transactionId) {
-    const serviceName = document.getElementById('edit-transaction-service').value;
-    const fullPrice = parseFloat(document.getElementById('edit-transaction-price').value) || 0;
-    const discountPercent = parseFloat(document.getElementById('edit-transaction-discount').value) || 0;
-    const masterPercent = parseFloat(document.getElementById('edit-transaction-percent').value) || 50;
-    
-    showLoading('Обновление услуги...'); // ДОБАВЬТЕ
-    
-    try {
-        await apiCall('updateTransaction', {
-            transaction_id: transactionId,
-            updates: {
-                service_name: serviceName,
-                full_price: fullPrice,
-                discount_percent: discountPercent,
-                master_percent: masterPercent
-            }
-        });
-        await fetchData();
-        hideLoading(); // ДОБАВЬТЕ
-        closeModal();
-        showScreen('periodDetail', { periodId: 'CURRENT' });
-        showToast('Транзакция обновлена');
-    } catch (e) {
-        hideLoading(); // ДОБАВЬТЕ
-        showToast('Ошибка: ' + e.message);
-    }
-}
+  // Обычный режим — выбор услуги
+  const salonId = salon?.salon_id;
+  if (!salonId) {
+    listEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">Салон не выбран</div></div>';
+    return;
+  }
 
-async function deleteTransaction(transactionId) {
-    if (confirm('Удалить эту услугу из периода?')) {
-        try {
-            await apiCall('deleteTransaction', {
-                transaction_id: transactionId
-            });
-            await fetchData();
-            closeModal();
-            showScreen('periodDetail', { periodId: 'CURRENT' });
-            showToast('Транзакция удалена');
-        } catch (e) {
-            showToast('Ошибка: ' + e.message);
-        }
-    }
-}
-
-function showToast(message) {
-    const toast = document.createElement('div');
-    toast.textContent = message;
-    toast.style.cssText = `
-    position: fixed;
-    bottom: 5rem;
-    left: 50%;
-    transform: translateX(-50%);
-    background-color: rgba(0,0,0,0.8);
-    color: white;
-    padding: 0.75rem 1rem;
-    border-radius: 0.5rem;
-    font-size: 0.875rem;
-    z-index: 60;
-    transition: opacity 0.3s;
-    max-width: 90%;
-    text-align: center;
-    `;
-    document.body.appendChild(toast);
-    setTimeout(() => {
-        toast.style.opacity = '0';
-        setTimeout(() => toast.remove(), 300);
-    }, 2000);
-}
-
-// ===================== ОБРАБОТЧИКИ =====================
-async function handleClosePeriod() {
-    if (confirm('Закрыть текущий период? Все накопленные средства будут зафиксированы.')) {
-        showLoading('Закрытие периода...');
-        
-        try {
-            await apiCall('closeCurrentPeriod');
-            await fetchData();
-            hideLoading();
-            showScreen('history');
-            showToast('Период закрыт');
-        } catch (e) {
-            hideLoading();
-            showToast('Ошибка: ' + e.message);
-        }
-    }
-}
-
-async function initApp() {
-    console.log('Инициализация приложения...');
-
-    // Проверяем наличие токена
-    if (!AUTH_TOKEN) {
-        console.log('Токен не найден, показываем экран входа');
-        showScreen('initialSetup');
-        return;
+  apiCall('getServices', { salon_id: salonId }).then(data => {
+    if (!data.success || !data.services || data.services.length === 0) {
+      listEl.innerHTML = `
+        <div class="empty-state">
+          <i data-lucide="inbox"></i>
+          <div class="empty-state-text">Нет услуг</div>
+          <p class="text-small text-muted mt-16">Добавьте услуги в настройках салона</p>
+        </div>
+      `;
+      lucide.createIcons();
+      return;
     }
 
-    console.log('Токен найден, загружаем данные...');
-
-    // Показываем загрузку
-    document.getElementById('loading').classList.remove('hidden');
-    document.getElementById('content').classList.add('hidden');
-
-    // Синхронизируем оффлайн-данные
-    await syncPendingVisits();
-
-    // Пытаемся загрузить данные
-    try {
-        await fetchData();
-        console.log('Данные загружены успешно');
-        showScreen('dashboard');
-    } catch (e) {
-        console.error('Ошибка загрузки данных:', e);
-        // Если ошибка авторизации - показываем экран входа
-        if (e.message.includes('авторизац') || e.message.includes('токен')) {
-            localStorage.removeItem('auth_token');
-            AUTH_TOKEN = '';
-            showScreen('initialSetup');
-        } else {
-            // Другая ошибка - показываем сообщение
-            showScreen('initialSetup');
-        }
-    }
+    listEl.innerHTML = data.services.map(s => `
+      <div class="service-item clickable" onclick="App.addServiceToVisit({ service_id: '${s.service_id}', service_name: ${JSON.stringify(s.service_name)}, base_price: ${s.base_price} })">
+        <div class="service-item-main">
+          <div class="service-name">${escapeHtml(s.service_name)}</div>
+        </div>
+        <div class="service-price">${formatMoney(s.base_price)}</div>
+      </div>
+    `).join('');
+    lucide.createIcons();
+  }).catch(e => {
+    listEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">Ошибка загрузки</div></div>`;
+  });
 }
 
-// Глобальные функции
-window.showScreen = showScreen;
-window.closeModal = closeModal;
-window.addServiceRow = addServiceRow;
-window.deleteServiceRow = deleteServiceRow;
-window.handleSaveVisit = handleSaveVisit;
-window.handleClosePeriod = handleClosePeriod;
-window.handleInitialize = handleInitialize;
-window.showPayoutModal = showPayoutModal;
-window.handleFullPayout = handleFullPayout;
-window.handleManualPayout = handleManualPayout;
-window.showCatalogEditModal = showCatalogEditModal;
-window.handleCatalogSave = handleCatalogSave;
-window.handleDeleteService = handleDeleteService;
-window.saveSettings = saveSettings;
-window.handleRevertLastAction = handleRevertLastAction;
-window.showAnalytics = showAnalytics;
-window.editTransaction = editTransaction;
-window.saveTransactionEdit = saveTransactionEdit;
-window.deleteTransaction = deleteTransaction;
-window.showLoading = showLoading;
-window.hideLoading = hideLoading;
-window.showAnalytics = showAnalytics;
-window.showCustomPeriodModal = showCustomPeriodModal;
-window.applyCustomPeriod = applyCustomPeriod;
-window.renderAnalytics = renderAnalytics;
+// ==================== МОДАЛКА ====================
+function showModal(html) {
+  const modal = document.getElementById('modal');
+  const backdrop = document.getElementById('modal-backdrop');
+  const content = document.getElementById('modal-content');
+  if (!modal || !backdrop || !content) return;
+  content.innerHTML = html;
+  modal.classList.add('show');
+  backdrop.classList.add('show');
+  lucide.createIcons();
+}
 
-document.addEventListener('DOMContentLoaded', initApp);
+function closeModal() {
+  App.closeModal();
+}
 
-if ('serviceWorker' in navigator) {
-    window.addEventListener('load', () => {
-        navigator.serviceWorker.register('sw.js').catch(err => {
-            console.log('Service Worker registration failed: ', err);
-        });
+// ==================== TOAST ====================
+let toastTimeout;
+function toast(message, type = '') {
+  const el = document.getElementById('toast');
+  if (!el) return;
+  clearTimeout(toastTimeout);
+  el.textContent = message;
+  el.className = 'toast show ' + type;
+  toastTimeout = setTimeout(() => {
+    el.classList.remove('show');
+  }, 2500);
+}
+
+// ==================== АВТОРИЗАЦИЯ ====================
+async function handleAuth() {
+  const input = document.getElementById('auth-token');
+  const btn = document.getElementById('btn-auth');
+  const token = input.value.trim();
+
+  if (!token) {
+    toast('Введите токен', 'error');
+    return;
+  }
+
+  btn.disabled = true;
+  btn.innerHTML = '<div class="spinner-btn"></div><span>Подключение...</span>';
+
+  State.token = token;
+
+  try {
+    const result = await apiCall('getQuickData');
+    if (!result.success) throw new Error('Ошибка данных');
+
+    Storage.set(STORAGE_KEYS.TOKEN, token);
+    State.data.master = result.master;
+    State.data.salons = result.salons;
+    State.data.totalDebt = result.totalDebt;
+    State.data.recentOps = result.recentOps;
+
+    // Выбираем первый салон по умолчанию
+    if (State.data.salons.length > 0) {
+      State.currentSalonId = State.data.salons[0].salon_id;
+      Storage.set(STORAGE_KEYS.SALON, State.currentSalonId);
+    }
+
+    Storage.set(STORAGE_KEYS.DATA, State.data);
+    Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
+
+    // Загружаем полные данные в фоне
+    syncData(true);
+
+    App.go('home');
+  } catch (e) {
+    console.error('Auth error:', e);
+    toast('Неверный токен или ошибка связи', 'error');
+    btn.disabled = false;
+    btn.innerHTML = '<span>Подключиться</span>';
+    State.token = '';
+  }
+}
+
+// ==================== ИНИЦИАЛИЗАЦИЯ ====================
+async function init() {
+  lucide.createIcons();
+
+  // Загружаем токен
+  const token = Storage.get(STORAGE_KEYS.TOKEN, '');
+  if (!token) {
+    App.go('auth');
+    return;
+  }
+
+  State.token = token;
+
+  // Загружаем кэшированные данные
+  const cachedData = Storage.get(STORAGE_KEYS.DATA);
+  const cachedFull = Storage.get(STORAGE_KEYS.DATA + '_full');
+  const cachedSalon = Storage.get(STORAGE_KEYS.SALON, '');
+
+  if (cachedData) {
+    State.data = cachedData;
+  }
+  if (cachedFull) {
+    State.fullData = cachedFull;
+  }
+  if (cachedSalon) {
+    State.currentSalonId = cachedSalon;
+  } else if (State.data.salons && State.data.salons.length > 0) {
+    State.currentSalonId = State.data.salons[0].salon_id;
+  }
+
+  // Сразу показываем главный экран если есть данные
+  if (cachedData && cachedData.salons && cachedData.salons.length > 0) {
+    App.go('home');
+  } else {
+    showScreen('loading');
+  }
+
+  // В фоне — синхронизация
+  setTimeout(async () => {
+    await flushPending();
+    const ok = await syncData();
+    if (ok && State.currentScreen !== 'home') {
+      App.go('home');
+    } else if (ok) {
+      renderHome();
+    }
+  }, 50);
+}
+
+// ==================== EVENTS ====================
+document.addEventListener('DOMContentLoaded', () => {
+  // Кнопка авторизации
+  const authBtn = document.getElementById('btn-auth');
+  if (authBtn) authBtn.addEventListener('click', handleAuth);
+
+  const tokenInput = document.getElementById('auth-token');
+  if (tokenInput) {
+    tokenInput.addEventListener('keypress', e => {
+      if (e.key === 'Enter') handleAuth();
     });
-}
+  }
+
+  // Фильтры журнала
+  const journalSalon = document.getElementById('journal-salon-filter');
+  if (journalSalon) journalSalon.addEventListener('change', e => {
+    State.journalFilter.salon = e.target.value;
+    renderJournalList();
+  });
+
+  const journalType = document.getElementById('journal-type-filter');
+  if (journalType) journalType.addEventListener('change', e => {
+    State.journalFilter.type = e.target.value;
+    renderJournalList();
+  });
+
+  // Фильтры отчётов
+  const reportsSalon = document.getElementById('reports-salon-filter');
+  if (reportsSalon) reportsSalon.addEventListener('change', e => {
+    State.reportsFilter.salon = e.target.value;
+    renderReportsContent();
+  });
+
+  // Табы отчётов
+  const reportsTabs = document.getElementById('reports-tabs');
+  if (reportsTabs) {
+    reportsTabs.querySelectorAll('.tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        reportsTabs.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+        State.reportsFilter.period = tab.dataset.period;
+        renderReportsContent();
+      });
+    });
+  }
+
+  // Кнопка сохранения визита
+  const saveVisitBtn = document.getElementById('btn-save-visit');
+  if (saveVisitBtn) saveVisitBtn.addEventListener('click', App.saveVisit);
+
+  // Кнопка сохранения выплаты
+  const savePayoutBtn = document.getElementById('btn-save-payout');
+  if (savePayoutBtn) savePayoutBtn.addEventListener('click', App.savePayout);
+
+  // Кнопка сохранения салона
+  const saveSalonBtn = document.getElementById('btn-save-salon');
+  if (saveSalonBtn) saveSalonBtn.addEventListener('click', App.saveSalon);
+
+  // Кнопка удаления салона
+  const deleteSalonBtn = document.getElementById('btn-delete-salon');
+  if (deleteSalonBtn) deleteSalonBtn.addEventListener('click', App.deleteSalon);
+
+  // Кнопка добавления салона
+  const addSalonBtn = document.getElementById('btn-add-salon');
+  if (addSalonBtn) addSalonBtn.addEventListener('click', () => {
+    State.editingSalonId = null;
+    App.go('salon-edit');
+  });
+
+  // Назад из выбора услуги
+  const servicePickerBack = document.getElementById('service-picker-back');
+  if (servicePickerBack) {
+    servicePickerBack.addEventListener('click', () => {
+      App.go(servicePickerMode === 'salon-edit' ? 'salon-edit' : 'add-visit');
+    });
+  }
+
+  // Онлайн/оффлайн события
+  window.addEventListener('online', () => {
+    flushPending();
+    syncData(true);
+  });
+  window.addEventListener('offline', () => setNetwork('offline'));
+
+  // Запуск
+  init();
+
+  // Регистрация service worker
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('sw.js').catch(() => {});
+  }
+});
