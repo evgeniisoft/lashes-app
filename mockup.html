@@ -1,0 +1,1233 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Учет доходов мастера — Макет</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+<style>
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    -webkit-tap-highlight-color: transparent;
+  }
+  
+  :root {
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --success: #16a34a;
+    --danger: #dc2626;
+    --warning: #f59e0b;
+    --bg: #f9fafb;
+    --card: #ffffff;
+    --border: #e5e7eb;
+    --text-1: #111827;
+    --text-2: #6b7280;
+    --text-3: #9ca3af;
+  }
+  
+  body {
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text-1);
+    font-size: 15px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    overscroll-behavior: none;
+  }
+  
+  .app {
+    max-width: 480px;
+    margin: 0 auto;
+    min-height: 100vh;
+    background: var(--bg);
+    position: relative;
+    padding-bottom: 80px;
+  }
+  
+  /* ===== SCREENS ===== */
+  .screen {
+    display: none;
+    padding: 16px;
+    animation: fadeIn 0.2s ease-out;
+  }
+  
+  .screen.active {
+    display: block;
+  }
+  
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(4px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  
+  /* ===== HEADER ===== */
+  .header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding: 8px 0;
+  }
+  
+  .header-back {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    cursor: pointer;
+  }
+  
+  .header-name {
+    font-size: 17px;
+    font-weight: 600;
+  }
+  
+  .icon-btn {
+    width: 40px;
+    height: 40px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 10px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-2);
+    transition: background 0.15s;
+  }
+  
+  .icon-btn:active {
+    background: var(--border);
+  }
+  
+  .icon-btn svg {
+    width: 22px;
+    height: 22px;
+  }
+  
+  /* ===== CARD ===== */
+  .card {
+    background: var(--card);
+    border-radius: 14px;
+    padding: 20px;
+    margin-bottom: 12px;
+    border: 1px solid var(--border);
+  }
+  
+  /* ===== DEBT BLOCK ===== */
+  .debt-label {
+    font-size: 13px;
+    color: var(--text-2);
+    text-align: center;
+    margin-bottom: 8px;
+  }
+  
+  .debt-amount {
+    font-size: 40px;
+    font-weight: 700;
+    text-align: center;
+    letter-spacing: -1px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-1);
+    margin-bottom: 20px;
+  }
+  
+  .debt-amount.zero {
+    color: var(--success);
+  }
+  
+  /* ===== SALON LIST ===== */
+  .salon-list {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    background: var(--bg);
+    border-radius: 10px;
+    padding: 4px;
+  }
+  
+  .salon-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 14px;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  
+  .salon-item.active {
+    background: var(--card);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+  
+  .salon-item-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 14px;
+    color: var(--text-2);
+  }
+  
+  .salon-item.active .salon-item-name {
+    color: var(--text-1);
+    font-weight: 600;
+  }
+  
+  .salon-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: transparent;
+    border: 1.5px solid var(--text-3);
+  }
+  
+  .salon-item.active .salon-dot {
+    background: var(--primary);
+    border-color: var(--primary);
+  }
+  
+  .salon-item-amount {
+    font-size: 14px;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-2);
+  }
+  
+  .salon-item.active .salon-item-amount {
+    color: var(--text-1);
+    font-weight: 600;
+  }
+  
+  /* ===== BUTTONS ===== */
+  .btn {
+    width: 100%;
+    height: 56px;
+    border-radius: 12px;
+    border: none;
+    font-family: inherit;
+    font-size: 16px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    transition: transform 0.1s, background 0.15s;
+    margin-bottom: 10px;
+  }
+  
+  .btn:active {
+    transform: scale(0.98);
+  }
+  
+  .btn svg {
+    width: 20px;
+    height: 20px;
+  }
+  
+  .btn-primary {
+    background: var(--primary);
+    color: white;
+  }
+  
+  .btn-primary:active {
+    background: var(--primary-dark);
+  }
+  
+  .btn-secondary {
+    background: var(--card);
+    color: var(--text-1);
+    border: 1px solid var(--border);
+  }
+  
+  .btn-secondary:active {
+    background: var(--bg);
+  }
+  
+  .btn-success {
+    background: var(--success);
+    color: white;
+  }
+  
+  .btn-danger {
+    background: transparent;
+    color: var(--danger);
+    border: 1px solid var(--border);
+  }
+  
+  /* ===== SECTION ===== */
+  .section-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 24px 4px 12px;
+  }
+  
+  /* ===== OPERATION ITEM ===== */
+  .op-item {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 14px 16px;
+    background: var(--card);
+    border-radius: 12px;
+    margin-bottom: 6px;
+    cursor: pointer;
+    border: 1px solid var(--border);
+    transition: background 0.15s;
+  }
+  
+  .op-item:active {
+    background: var(--bg);
+  }
+  
+  .op-status {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+  
+  .op-status svg {
+    width: 18px;
+    height: 18px;
+  }
+  
+  .op-status.check {
+    background: #dcfce7;
+    color: var(--success);
+  }
+  
+  .op-status.pending {
+    background: #fef3c7;
+    color: #d97706;
+  }
+  
+  .op-status.money {
+    background: #dbeafe;
+    color: var(--primary);
+  }
+  
+  .op-content {
+    flex: 1;
+    min-width: 0;
+  }
+  
+  .op-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-1);
+    margin-bottom: 2px;
+  }
+  
+  .op-meta {
+    font-size: 13px;
+    color: var(--text-2);
+  }
+  
+  .op-amount {
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-1);
+    white-space: nowrap;
+  }
+  
+  .op-amount.income {
+    color: var(--success);
+  }
+  
+  .op-amount.expense {
+    color: var(--primary);
+  }
+  
+  /* ===== BOTTOM NAV ===== */
+  .bottom-nav {
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 100%;
+    max-width: 480px;
+    background: var(--card);
+    border-top: 1px solid var(--border);
+    display: flex;
+    z-index: 40;
+    padding-bottom: env(safe-area-inset-bottom, 0);
+  }
+  
+  .nav-item {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    padding: 12px 8px;
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: var(--text-3);
+    font-family: inherit;
+    font-size: 11px;
+    font-weight: 500;
+    transition: color 0.15s;
+  }
+  
+  .nav-item.active {
+    color: var(--primary);
+  }
+  
+  .nav-item svg {
+    width: 22px;
+    height: 22px;
+  }
+  
+  /* ===== INPUT ===== */
+  .input-label {
+    display: block;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text-2);
+    margin-bottom: 8px;
+  }
+  
+  .input {
+    width: 100%;
+    height: 52px;
+    padding: 0 16px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--card);
+    font-family: inherit;
+    font-size: 16px;
+    color: var(--text-1);
+    outline: none;
+    transition: border 0.15s;
+  }
+  
+  .input:focus {
+    border-color: var(--primary);
+  }
+  
+  .input-amount {
+    font-size: 28px;
+    font-weight: 700;
+    text-align: center;
+    height: 72px;
+    font-variant-numeric: tabular-nums;
+  }
+  
+  /* ===== SERVICE ITEM ===== */
+  .service-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px;
+    background: var(--card);
+    border-radius: 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  
+  .service-item:active {
+    background: var(--bg);
+  }
+  
+  .service-name {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-1);
+  }
+  
+  .service-price {
+    font-size: 15px;
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-1);
+  }
+  
+  /* ===== TOTAL BLOCK ===== */
+  .total-block {
+    background: var(--card);
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid var(--border);
+    margin-bottom: 12px;
+  }
+  
+  .total-row {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 8px;
+    font-size: 15px;
+  }
+  
+  .total-row:last-child {
+    margin-bottom: 0;
+  }
+  
+  .total-row-label {
+    color: var(--text-2);
+  }
+  
+  .total-row-value {
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-1);
+  }
+  
+  .total-row-value.income {
+    color: var(--success);
+  }
+  
+  /* ===== QUICK AMOUNTS ===== */
+  .quick-amounts {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 8px;
+    margin-top: 12px;
+  }
+  
+  .quick-amount {
+    height: 44px;
+    background: var(--bg);
+    border: none;
+    border-radius: 10px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-1);
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  
+  .quick-amount:active {
+    background: var(--border);
+  }
+  
+  /* ===== TABS ===== */
+  .tabs {
+    display: flex;
+    background: var(--bg);
+    border-radius: 10px;
+    padding: 4px;
+    margin-bottom: 12px;
+  }
+  
+  .tab {
+    flex: 1;
+    height: 40px;
+    background: transparent;
+    border: none;
+    border-radius: 8px;
+    font-family: inherit;
+    font-size: 14px;
+    font-weight: 500;
+    color: var(--text-2);
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  
+  .tab.active {
+    background: var(--card);
+    color: var(--text-1);
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+  }
+  
+  /* ===== DATE GROUP ===== */
+  .date-group {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin: 24px 4px 12px;
+  }
+  
+  /* ===== REPORT ===== */
+  .report-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 16px 0;
+    border-bottom: 1px solid var(--border);
+  }
+  
+  .report-row:last-child {
+    border-bottom: none;
+  }
+  
+  .report-label {
+    font-size: 15px;
+    color: var(--text-2);
+  }
+  
+  .report-value {
+    font-size: 18px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    color: var(--text-1);
+  }
+  
+  .report-value.success {
+    color: var(--success);
+  }
+  
+  .report-value.danger {
+    color: var(--danger);
+  }
+  
+  /* ===== SETTINGS ROW ===== */
+  .settings-row {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 16px;
+    background: var(--card);
+    border-radius: 12px;
+    margin-bottom: 8px;
+    border: 1px solid var(--border);
+    cursor: pointer;
+  }
+  
+  .settings-row:active {
+    background: var(--bg);
+  }
+  
+  .settings-icon {
+    width: 40px;
+    height: 40px;
+    background: var(--bg);
+    border-radius: 10px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-2);
+    flex-shrink: 0;
+  }
+  
+  .settings-icon svg {
+    width: 20px;
+    height: 20px;
+  }
+  
+  .settings-content {
+    flex: 1;
+  }
+  
+  .settings-title {
+    font-size: 15px;
+    font-weight: 500;
+    color: var(--text-1);
+  }
+  
+  .settings-subtitle {
+    font-size: 13px;
+    color: var(--text-2);
+    margin-top: 2px;
+  }
+  
+  .settings-chevron {
+    color: var(--text-3);
+  }
+  
+  /* ===== TOAST ===== */
+  .toast {
+    position: fixed;
+    bottom: 100px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: rgba(17, 24, 39, 0.95);
+    color: white;
+    padding: 12px 20px;
+    border-radius: 12px;
+    font-size: 14px;
+    opacity: 0;
+    pointer-events: none;
+    transition: all 0.3s;
+    z-index: 100;
+    max-width: 90%;
+    text-align: center;
+  }
+  
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+  
+  /* ===== SHEET ===== */
+  .sheet-backdrop {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 50;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+  }
+  
+  .sheet-backdrop.show {
+    opacity: 1;
+    pointer-events: auto;
+  }
+  
+  .sheet {
+    position: fixed;
+    bottom: 0;
+    left: 50%;
+    transform: translateX(-50%) translateY(100%);
+    width: 100%;
+    max-width: 480px;
+    background: var(--card);
+    border-radius: 20px 20px 0 0;
+    padding: 8px 16px 24px;
+    z-index: 51;
+    transition: transform 0.25s ease-out;
+    max-height: 85vh;
+    overflow-y: auto;
+    padding-bottom: calc(24px + env(safe-area-inset-bottom, 0));
+  }
+  
+  .sheet.show {
+    transform: translateX(-50%) translateY(0);
+  }
+  
+  .sheet-handle {
+    width: 40px;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    margin: 0 auto 16px;
+  }
+  
+  .sheet-title {
+    font-size: 18px;
+    font-weight: 600;
+    margin-bottom: 16px;
+  }
+  
+  /* ===== MONEY COLORS ===== */
+  .money-in {
+    color: var(--success);
+  }
+  
+  .money-out {
+    color: var(--primary);
+  }
+</style>
+</head>
+<body>
+
+<div class="app">
+
+  <!-- ==================== ГЛАВНЫЙ ==================== -->
+  <div class="screen active" id="screen-home">
+    
+    <div class="header">
+      <div class="header-name">Мария</div>
+      <button class="icon-btn" onclick="showScreen('screen-settings')">
+        <i data-lucide="settings"></i>
+      </button>
+    </div>
+    
+    <div class="card">
+      <div class="debt-label">Всего должны</div>
+      <div class="debt-amount" id="total-debt">25 000 ₽</div>
+      
+      <div class="salon-list" id="salon-list">
+        <div class="salon-item active" onclick="switchSalon(this, 'Красота')">
+          <div class="salon-item-name">
+            <span class="salon-dot"></span>
+            <span>Красота</span>
+          </div>
+          <div class="salon-item-amount">10 000 ₽</div>
+        </div>
+        <div class="salon-item" onclick="switchSalon(this, 'Ромашка')">
+          <div class="salon-item-name">
+            <span class="salon-dot"></span>
+            <span>Ромашка</span>
+          </div>
+          <div class="salon-item-amount">8 000 ₽</div>
+        </div>
+        <div class="salon-item" onclick="switchSalon(this, 'Салон №3')">
+          <div class="salon-item-name">
+            <span class="salon-dot"></span>
+            <span>Салон №3</span>
+          </div>
+          <div class="salon-item-amount">7 000 ₽</div>
+        </div>
+      </div>
+    </div>
+    
+    <button class="btn btn-primary" onclick="showScreen('screen-add')">
+      <i data-lucide="plus"></i>
+      Добавить визит
+    </button>
+    
+    <button class="btn btn-secondary" onclick="showScreen('screen-payout')">
+      <i data-lucide="banknote"></i>
+      Получила деньги
+    </button>
+    
+    <div class="section-title">Последние операции</div>
+    
+    <div class="op-item" onclick="showScreen('screen-journal')">
+      <div class="op-status check"><i data-lucide="check"></i></div>
+      <div class="op-content">
+        <div class="op-title">Наращивание 2D</div>
+        <div class="op-meta">Красота · 14:30</div>
+      </div>
+      <div class="op-amount income">3 700 ₽</div>
+    </div>
+    
+    <div class="op-item" onclick="showScreen('screen-journal')">
+      <div class="op-status pending"><i data-lucide="clock"></i></div>
+      <div class="op-content">
+        <div class="op-title">Коррекция</div>
+        <div class="op-meta">Красота · 12:00</div>
+      </div>
+      <div class="op-amount income">2 500 ₽</div>
+    </div>
+    
+    <div class="op-item" onclick="showScreen('screen-journal')">
+      <div class="op-status money"><i data-lucide="banknote"></i></div>
+      <div class="op-content">
+        <div class="op-title">Получено</div>
+        <div class="op-meta">Красота · вчера</div>
+      </div>
+      <div class="op-amount expense">−5 000 ₽</div>
+    </div>
+    
+  </div>
+
+  <!-- ==================== ДОБАВИТЬ ВИЗИТ ==================== -->
+  <div class="screen" id="screen-add">
+    
+    <div class="header">
+      <div class="header-back" onclick="showScreen('screen-home')">
+        <button class="icon-btn"><i data-lucide="arrow-left"></i></button>
+        <div class="header-name">Новый визит</div>
+      </div>
+    </div>
+    
+    <div style="margin-bottom: 16px;">
+      <label class="input-label">Дата и время</label>
+      <input type="text" class="input" value="08.10.2026, 14:30">
+    </div>
+    
+    <div class="section-title" style="margin-top: 16px;">Услуги</div>
+    
+    <div class="service-item">
+      <div>
+        <div class="service-name">Наращивание 2D</div>
+        <div style="font-size: 13px; color: var(--text-2); margin-top: 2px;">3 700 ₽ · скидка 0% · 50%</div>
+      </div>
+      <button class="icon-btn"><i data-lucide="x"></i></button>
+    </div>
+    
+    <button class="btn btn-secondary" onclick="showSheet('sheet-services')">
+      <i data-lucide="plus"></i>
+      Добавить услугу
+    </button>
+    
+    <div style="height: 8px;"></div>
+    
+    <div class="total-block">
+      <div class="total-row">
+        <span class="total-row-label">Стоимость</span>
+        <span class="total-row-value">3 700 ₽</span>
+      </div>
+      <div class="total-row">
+        <span class="total-row-label">Мастеру</span>
+        <span class="total-row-value income">1 850 ₽</span>
+      </div>
+    </div>
+    
+    <button class="btn btn-primary" onclick="showToast('Визит сохранён'); setTimeout(() => showScreen('screen-home'), 600)">
+      Сохранить визит
+    </button>
+    
+  </div>
+
+  <!-- ==================== ПОЛУЧИЛА ДЕНЬГИ ==================== -->
+  <div class="screen" id="screen-payout">
+    
+    <div class="header">
+      <div class="header-back" onclick="showScreen('screen-home')">
+        <button class="icon-btn"><i data-lucide="arrow-left"></i></button>
+        <div class="header-name">Получила деньги</div>
+      </div>
+    </div>
+    
+    <div class="card" style="text-align: center;">
+      <div class="debt-label">Красота должна</div>
+      <div style="font-size: 28px; font-weight: 700; font-variant-numeric: tabular-nums;">10 000 ₽</div>
+    </div>
+    
+    <div style="margin-bottom: 16px;">
+      <label class="input-label">Сколько получила</label>
+      <input type="text" class="input input-amount" value="5 000" style="font-size: 32px;">
+    </div>
+    
+    <div class="quick-amounts">
+      <button class="quick-amount" onclick="setAmount('1000')">1 000</button>
+      <button class="quick-amount" onclick="setAmount('2000')">2 000</button>
+      <button class="quick-amount" onclick="setAmount('5000')">5 000</button>
+      <button class="quick-amount" onclick="setAmount('10000')">Всё</button>
+    </div>
+    
+    <div style="height: 16px;"></div>
+    
+    <div>
+      <label class="input-label">Комментарий (необязательно)</label>
+      <input type="text" class="input" placeholder="наличными">
+    </div>
+    
+    <div style="height: 16px;"></div>
+    
+    <button class="btn btn-success" onclick="showToast('Выплата сохранена'); setTimeout(() => showScreen('screen-home'), 600)">
+      <i data-lucide="check"></i>
+      Подтвердить
+    </button>
+    
+  </div>
+
+  <!-- ==================== ЖУРНАЛ ==================== -->
+  <div class="screen" id="screen-journal">
+    
+    <div class="header">
+      <div class="header-name">Журнал</div>
+      <button class="icon-btn"><i data-lucide="search"></i></button>
+    </div>
+    
+    <div class="tabs">
+      <button class="tab active">Все</button>
+      <button class="tab">Визиты</button>
+      <button class="tab">Выплаты</button>
+    </div>
+    
+    <div class="date-group">Сегодня, 08.10</div>
+    
+    <div class="op-item">
+      <div class="op-status check"><i data-lucide="check"></i></div>
+      <div class="op-content">
+        <div class="op-title">Наращивание 2D</div>
+        <div class="op-meta">Красота · 14:30</div>
+      </div>
+      <div class="op-amount income">3 700 ₽</div>
+    </div>
+    
+    <div class="op-item">
+      <div class="op-status check"><i data-lucide="check"></i></div>
+      <div class="op-content">
+        <div class="op-title">Коррекция</div>
+        <div class="op-meta">Красота · 12:00</div>
+      </div>
+      <div class="op-amount income">2 500 ₽</div>
+    </div>
+    
+    <div class="date-group">Вчера, 07.10</div>
+    
+    <div class="op-item">
+      <div class="op-status money"><i data-lucide="banknote"></i></div>
+      <div class="op-content">
+        <div class="op-title">Получено</div>
+        <div class="op-meta">Красота · 18:00</div>
+      </div>
+      <div class="op-amount expense">−5 000 ₽</div>
+    </div>
+    
+    <div class="op-item">
+      <div class="op-status check"><i data-lucide="check"></i></div>
+      <div class="op-content">
+        <div class="op-title">Наращивание 1D</div>
+        <div class="op-meta">Ромашка · 15:00</div>
+      </div>
+      <div class="op-amount income">3 200 ₽</div>
+    </div>
+    
+    <div style="height: 16px;"></div>
+    
+    <button class="btn btn-secondary">Показать ещё</button>
+    
+  </div>
+
+  <!-- ==================== ОТЧЁТЫ ==================== -->
+  <div class="screen" id="screen-reports">
+    
+    <div class="header">
+      <div class="header-name">Отчёты</div>
+    </div>
+    
+    <div class="tabs">
+      <button class="tab">Сегодня</button>
+      <button class="tab">Неделя</button>
+      <button class="tab active">Месяц</button>
+      <button class="tab">Год</button>
+    </div>
+    
+    <div class="card">
+      <div class="report-row">
+        <span class="report-label">Заработала</span>
+        <span class="report-value success">45 000 ₽</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Получила</span>
+        <span class="report-value">30 000 ₽</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Осталось</span>
+        <span class="report-value danger">15 000 ₽</span>
+      </div>
+    </div>
+    
+    <div class="section-title">По салонам</div>
+    
+    <div class="card">
+      <div style="font-weight: 600; margin-bottom: 12px;">Красота</div>
+      <div class="total-row">
+        <span class="total-row-label">Заработала</span>
+        <span class="total-row-value">30 000 ₽</span>
+      </div>
+      <div class="total-row">
+        <span class="total-row-label">Получила</span>
+        <span class="total-row-value">20 000 ₽</span>
+      </div>
+      <div class="total-row">
+        <span class="total-row-label">Остаток</span>
+        <span class="total-row-value income">10 000 ₽</span>
+      </div>
+    </div>
+    
+    <div class="card">
+      <div style="font-weight: 600; margin-bottom: 12px;">Ромашка</div>
+      <div class="total-row">
+        <span class="total-row-label">Заработала</span>
+        <span class="total-row-value">15 000 ₽</span>
+      </div>
+      <div class="total-row">
+        <span class="total-row-label">Получила</span>
+        <span class="total-row-value">10 000 ₽</span>
+      </div>
+      <div class="total-row">
+        <span class="total-row-label">Остаток</span>
+        <span class="total-row-value income">5 000 ₽</span>
+      </div>
+    </div>
+    
+    <div class="section-title">Топ услуг</div>
+    
+    <div class="card">
+      <div class="report-row">
+        <span class="report-label">Наращивание 2D</span>
+        <span class="report-value" style="font-size: 16px;">25 раз</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Коррекция</span>
+        <span class="report-value" style="font-size: 16px;">15 раз</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Наращивание 1D</span>
+        <span class="report-value" style="font-size: 16px;">8 раз</span>
+      </div>
+    </div>
+    
+  </div>
+
+  <!-- ==================== НАСТРОЙКИ ==================== -->
+  <div class="screen" id="screen-settings">
+    
+    <div class="header">
+      <div class="header-back" onclick="showScreen('screen-home')">
+        <button class="icon-btn"><i data-lucide="arrow-left"></i></button>
+        <div class="header-name">Ещё</div>
+      </div>
+    </div>
+    
+    <div class="settings-row">
+      <div class="settings-icon"><i data-lucide="user"></i></div>
+      <div class="settings-content">
+        <div class="settings-title">Мария</div>
+        <div class="settings-subtitle">Профиль</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row">
+      <div class="settings-icon"><i data-lucide="building-2"></i></div>
+      <div class="settings-content">
+        <div class="settings-title">Салоны</div>
+        <div class="settings-subtitle">3 из 3</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row">
+      <div class="settings-icon"><i data-lucide="sparkles"></i></div>
+      <div class="settings-content">
+        <div class="settings-title">Прайс-лист</div>
+        <div class="settings-subtitle">Настроить услуги по салонам</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row">
+      <div class="settings-icon"><i data-lucide="refresh-cw"></i></div>
+      <div class="settings-content">
+        <div class="settings-title">Данные</div>
+        <div class="settings-subtitle">Синхронизация: только что</div>
+      </div>
+      <i data-lucide="chevron-right" class="settings-chevron"></i>
+    </div>
+    
+    <div class="settings-row">
+      <div class="settings-icon" style="color: var(--danger);"><i data-lucide="log-out"></i></div>
+      <div class="settings-content">
+        <div class="settings-title" style="color: var(--danger);">Выйти</div>
+      </div>
+    </div>
+    
+  </div>
+
+</div>
+
+<!-- ==================== BOTTOM NAV ==================== -->
+<div class="bottom-nav">
+  <button class="nav-item active" onclick="showScreen('screen-home')" id="nav-home">
+    <i data-lucide="home"></i>
+    <span>Главная</span>
+  </button>
+  <button class="nav-item" onclick="showScreen('screen-journal')" id="nav-journal">
+    <i data-lucide="list"></i>
+    <span>Журнал</span>
+  </button>
+  <button class="nav-item" onclick="showScreen('screen-reports')" id="nav-reports">
+    <i data-lucide="bar-chart-3"></i>
+    <span>Отчёты</span>
+  </button>
+  <button class="nav-item" onclick="showScreen('screen-settings')" id="nav-settings">
+    <i data-lucide="settings"></i>
+    <span>Ещё</span>
+  </button>
+</div>
+
+<!-- ==================== SHEET: ВЫБОР УСЛУГИ ==================== -->
+<div class="sheet-backdrop" id="backdrop" onclick="closeSheet()"></div>
+
+<div class="sheet" id="sheet-services">
+  <div class="sheet-handle"></div>
+  <div class="sheet-title">Выберите услугу</div>
+  
+  <div class="section-title" style="margin-top: 8px;">Часто используемые</div>
+  
+  <div class="service-item" onclick="closeSheet(); showToast('Услуга добавлена')">
+    <div class="service-name">Наращивание 2D</div>
+    <div class="service-price">3 700 ₽</div>
+  </div>
+  
+  <div class="service-item" onclick="closeSheet(); showToast('Услуга добавлена')">
+    <div class="service-name">Коррекция</div>
+    <div class="service-price">2 500 ₽</div>
+  </div>
+  
+  <div class="service-item" onclick="closeSheet(); showToast('Услуга добавлена')">
+    <div class="service-name">Наращивание 1D</div>
+    <div class="service-price">3 200 ₽</div>
+  </div>
+  
+  <div class="section-title">Все услуги</div>
+  
+  <div class="service-item" onclick="closeSheet(); showToast('Услуга добавлена')">
+    <div class="service-name">Наращивание 3D</div>
+    <div class="service-price">4 200 ₽</div>
+  </div>
+  
+  <div class="service-item" onclick="closeSheet(); showToast('Услуга добавлена')">
+    <div class="service-name">Наращивание 4D / 5D</div>
+    <div class="service-price">4 700 ₽</div>
+  </div>
+  
+  <div class="service-item" onclick="closeSheet(); showToast('Услуга добавлена')">
+    <div class="service-name">Уголки</div>
+    <div class="service-price">2 200 ₽</div>
+  </div>
+  
+  <div class="service-item" onclick="closeSheet(); showToast('Услуга добавлена')">
+    <div class="service-name">Изгиб L-L-M</div>
+    <div class="service-price">400 ₽</div>
+  </div>
+  
+</div>
+
+<!-- ==================== TOAST ==================== -->
+<div class="toast" id="toast"></div>
+
+<script>
+  // Инициализация Lucide
+  lucide.createIcons();
+  
+  // Показ экрана
+  function showScreen(id) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(id).classList.add('active');
+    window.scrollTo(0, 0);
+    
+    // Обновляем навигацию
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    const navMap = {
+      'screen-home': 'nav-home',
+      'screen-journal': 'nav-journal',
+      'screen-reports': 'nav-reports',
+      'screen-settings': 'nav-settings'
+    };
+    if (navMap[id]) {
+      document.getElementById(navMap[id])?.classList.add('active');
+    }
+  }
+  
+  // Переключение салона
+  function switchSalon(el, name) {
+    document.querySelectorAll('.salon-item').forEach(s => s.classList.remove('active'));
+    el.classList.add('active');
+    showToast('Текущий салон: ' + name);
+  }
+  
+  // Toast
+  function showToast(text) {
+    const toast = document.getElementById('toast');
+    toast.textContent = text;
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  }
+  
+  // Sheet
+  function showSheet(id) {
+    document.getElementById('backdrop').classList.add('show');
+    document.getElementById(id).classList.add('show');
+  }
+  
+  function closeSheet() {
+    document.getElementById('backdrop').classList.remove('show');
+    document.querySelectorAll('.sheet').forEach(s => s.classList.remove('show'));
+  }
+  
+  // Быстрая сумма
+  function setAmount(val) {
+    document.querySelector('.input-amount').value = val.replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+  }
+</script>
+
+</body>
+</html>
