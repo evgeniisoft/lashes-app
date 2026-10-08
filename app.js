@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v2.2
-   Мгновенная загрузка, оффлайн, салоны, редактирование
+   LASHES APP — APP.JS v3.0
+   Оптимизация: раздельные запросы, pending в UI, автосинк
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -9,10 +9,15 @@ const API_URL = 'https://script.google.com/macros/s/AKfycbzDZWaNyyU2S-Ipg-iVYDNJ
 const STORAGE_KEYS = {
   TOKEN: 'lash_token',
   DATA: 'lash_data',
+  DATA_FULL: 'lash_data_full',
   PENDING: 'lash_pending',
   SALON: 'lash_current_salon',
-  LAST_SYNC: 'lash_last_sync'
+  LAST_SYNC: 'lash_last_sync',
+  LAST_FULL_SYNC: 'lash_last_full_sync'
 };
+
+const SYNC_INTERVAL = 5 * 60 * 1000; // 5 минут
+const FULL_DATA_TTL = 5 * 60 * 1000; // 5 минут — данные в full считаются свежими
 
 // ==================== СОСТОЯНИЕ ====================
 const State = {
@@ -21,14 +26,15 @@ const State = {
     master: { name: '', phone: '' },
     salons: [],
     totalDebt: 0,
-    recentOps: [],
-    services: {}
+    recentOps: []
   },
   fullData: null,
+  fullDataLoadedAt: 0,
   pending: [],
   currentSalonId: '',
   currentScreen: 'loading',
   network: 'online',
+  syncing: false,
   draftVisit: { services: [] },
   editingSalonId: null,
   journalFilter: { salon: 'all', type: 'all' },
@@ -86,6 +92,15 @@ function escapeHtml(str) {
   return String(str).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+function timeAgo(timestamp) {
+  const diff = Math.round((Date.now() - timestamp) / 1000);
+  if (diff < 5) return 'только что';
+  if (diff < 60) return `${diff} сек назад`;
+  if (diff < 3600) return `${Math.round(diff / 60)} мин назад`;
+  if (diff < 86400) return `${Math.round(diff / 3600)} ч назад`;
+  return `${Math.round(diff / 86400)} дн назад`;
+}
+
 // ==================== STORAGE ====================
 const Storage = {
   get(key, def = null) {
@@ -123,7 +138,7 @@ async function apiCall(action, params = {}, options = {}) {
     }
   });
 
-  const timeout = options.timeout || 15000;
+  const timeout = options.timeout || 20000;
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -153,57 +168,93 @@ function setNetwork(status) {
   const el = document.getElementById('sync-indicator');
   const txt = document.getElementById('sync-text');
   if (!el || !txt) return;
+
   el.classList.remove('online', 'syncing', 'offline');
   el.classList.add(status);
-  txt.textContent = status === 'online' ? 'Синхронизировано' :
-                   status === 'syncing' ? 'Синхронизация' :
-                   'Офлайн';
+
+  const pendingCount = Storage.get(STORAGE_KEYS.PENDING, []).length;
+
+  if (status === 'online') {
+    txt.textContent = pendingCount > 0 ? `Отправить: ${pendingCount}` : 'Синхронизировано';
+  } else if (status === 'syncing') {
+    txt.textContent = 'Синхронизация';
+  } else {
+    txt.textContent = pendingCount > 0 ? `Офлайн · ${pendingCount}` : 'Офлайн';
+  }
 }
 
+// Только быстрые данные — для главного экрана
 async function syncData(silent = false) {
   if (!State.token) return false;
+  if (State.syncing) return true; // Уже в процессе
+
+  State.syncing = true;
   setNetwork('syncing');
 
   try {
-    const [quick, full] = await Promise.all([
-      apiCall('getQuickData'),
-      apiCall('getFullData').catch(() => null)
-    ]);
+    const quick = await apiCall('getQuickData');
 
     if (quick.success) {
       State.data.master = quick.master;
       State.data.salons = quick.salons;
       State.data.totalDebt = quick.totalDebt;
       State.data.recentOps = quick.recentOps;
+
+      Storage.set(STORAGE_KEYS.DATA, State.data);
+      Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
     }
 
-    if (full && full.success) {
+    setNetwork('online');
+    State.syncing = false;
+    return true;
+  } catch (e) {
+    console.error('Sync error:', e);
+    setNetwork('offline');
+    State.syncing = false;
+    return false;
+  }
+}
+
+// Полные данные — только для Журнала и Отчётов
+async function syncFullData(force = false) {
+  if (!State.token) return false;
+
+  // Если недавно грузили — не грузим снова
+  if (!force && State.fullData && (Date.now() - State.fullDataLoadedAt < FULL_DATA_TTL)) {
+    return true;
+  }
+
+  try {
+    const full = await apiCall('getFullData');
+    if (full.success) {
       State.fullData = {
         transactions: full.transactions,
         payouts: full.payouts,
         salons: full.salons
       };
+      State.fullDataLoadedAt = Date.now();
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
+      Storage.set(STORAGE_KEYS.LAST_FULL_SYNC, State.fullDataLoadedAt);
+      return true;
     }
-
-    Storage.set(STORAGE_KEYS.DATA, State.data);
-    if (State.fullData) Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
-    Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
-
-    setNetwork('online');
-    return true;
   } catch (e) {
-    console.error('Sync error:', e);
-    setNetwork('offline');
+    console.error('Full sync error:', e);
     return false;
   }
+  return false;
 }
 
-// ==================== СИНХРОНИЗАЦИЯ ОЧЕРЕДИ ====================
+// ==================== ОЧЕРЕДЬ ====================
 async function flushPending() {
   const pending = Storage.get(STORAGE_KEYS.PENDING, []);
-  if (pending.length === 0) return;
+  if (pending.length === 0) {
+    updatePendingUI();
+    return 0;
+  }
 
   const remaining = [];
+  let sent = 0;
+
   for (const op of pending) {
     try {
       if (op.type === 'add_visit') {
@@ -211,20 +262,55 @@ async function flushPending() {
       } else if (op.type === 'add_payout') {
         await apiCall('addPayout', { payload: op.payload });
       }
+      sent++;
+
+      // Обновляем recentOps — статус saved
+      State.data.recentOps = State.data.recentOps.map(op2 => {
+        if (op2.id === op.id) return { ...op2, status: 'saved' };
+        return op2;
+      });
     } catch (e) {
       console.error('Pending error:', e);
       op.attempts = (op.attempts || 0) + 1;
-      remaining.push(op);
+      if (op.attempts < 10) {
+        remaining.push(op);
+      }
     }
   }
 
   Storage.set(STORAGE_KEYS.PENDING, remaining);
+  Storage.set(STORAGE_KEYS.DATA, State.data);
+
+  updatePendingUI();
+
+  if (sent > 0 && State.currentScreen === 'home') {
+    renderHome();
+  }
+
+  return sent;
 }
 
 function addPending(op) {
   const pending = Storage.get(STORAGE_KEYS.PENDING, []);
   pending.push(op);
   Storage.set(STORAGE_KEYS.PENDING, pending);
+  updatePendingUI();
+}
+
+function updatePendingUI() {
+  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+  setNetwork(State.network);
+
+  // Обновляем настройки — статус
+  const syncEl = document.getElementById('settings-sync');
+  if (syncEl) {
+    if (pending.length > 0) {
+      syncEl.textContent = `Не отправлено: ${pending.length}`;
+    } else {
+      const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
+      syncEl.textContent = `Синхронизация: ${timeAgo(lastSync)}`;
+    }
+  }
 }
 
 // ==================== ГЛАВНЫЙ РОУТЕР ====================
@@ -297,11 +383,17 @@ const App = {
     const serviceDate = dateInput ? new Date(dateInput).toISOString() : new Date().toISOString();
     const clientId = uuid();
 
+    const servicesSnapshot = State.draftVisit.services.map(s => ({ ...s }));
+    const totalEarnings = servicesSnapshot.reduce((sum, s) => {
+      const finalPrice = s.full_price - (s.full_price * s.discount_percent / 100);
+      return sum + (finalPrice * s.master_percent / 100);
+    }, 0);
+
     const payload = {
       service_date: serviceDate,
       salon_id: salonId,
       client_id: clientId,
-      services: State.draftVisit.services.map(s => ({
+      services: servicesSnapshot.map(s => ({
         service_name: s.service_name,
         full_price: s.full_price,
         discount_percent: s.discount_percent,
@@ -309,24 +401,24 @@ const App = {
       }))
     };
 
-    btn.disabled = true;
-    btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
-
+    // ОПТИМИСТИЧНО: сразу добавляем в recentOps
     const optimistic = {
       id: clientId,
       type: 'visit',
       date: new Date().toISOString(),
       service_date: serviceDate,
-      title: State.draftVisit.services[0].service_name,
-      amount: State.draftVisit.services.reduce((sum, s) => {
-        const finalPrice = s.full_price - (s.full_price * s.discount_percent / 100);
-        return sum + (finalPrice * s.master_percent / 100);
-      }, 0),
+      title: servicesSnapshot[0].service_name,
+      amount: totalEarnings,
       salon_id: salonId,
       status: 'pending'
     };
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
+    Storage.set(STORAGE_KEYS.DATA, State.data);
 
+    // Сразу переходим на главную — не ждём сервер
+    App.go('home');
+
+    // Добавляем в pending заранее (защита от сбоя)
     addPending({
       id: clientId,
       type: 'add_visit',
@@ -335,23 +427,38 @@ const App = {
       attempts: 0
     });
 
-    try {
-      await apiCall('addVisit', { payload });
-      optimistic.status = 'saved';
-      toast('Визит сохранён', 'success');
-      syncData(true);
-      App.go('home');
-    } catch (e) {
-      console.error('Save visit error:', e);
-      toast('Нет связи. Сохранено локально', 'error');
-      App.go('home');
-      setNetwork('offline');
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = '<i data-lucide="check"></i><span>Сохранить визит</span>';
-      lucide.createIcons();
-      State.draftVisit = { services: [] };
-    }
+    // Пытаемся отправить в фоне
+    (async () => {
+      try {
+        await apiCall('addVisit', { payload });
+
+        // Успех — убираем из pending, меняем статус
+        const remaining = Storage.get(STORAGE_KEYS.PENDING, []).filter(o => o.id !== clientId);
+        Storage.set(STORAGE_KEYS.PENDING, remaining);
+
+        State.data.recentOps = State.data.recentOps.map(op => {
+          if (op.id === clientId) return { ...op, status: 'saved' };
+          return op;
+        });
+        Storage.set(STORAGE_KEYS.DATA, State.data);
+
+        if (State.currentScreen === 'home') renderHome();
+        updatePendingUI();
+
+        // Тихо обновляем с сервера
+        syncData(true);
+
+        toast('Визит сохранён', 'success');
+      } catch (e) {
+        console.error('Save visit error:', e);
+        setNetwork('offline');
+        toast('Нет связи. Сохранено локально', 'error');
+        updatePendingUI();
+      }
+    })();
+
+    // Очищаем форму
+    State.draftVisit = { services: [] };
   },
 
   updateVisitService(index, field, value) {
@@ -366,7 +473,6 @@ const App = {
   },
 
   async savePayout() {
-    const btn = document.getElementById('btn-save-payout');
     const salonId = State.currentSalonId;
     const amountInput = document.getElementById('payout-amount');
     const commentInput = document.getElementById('payout-comment');
@@ -382,26 +488,28 @@ const App = {
     }
 
     const clientId = uuid();
+    const comment = commentInput.value.trim();
+
     const payload = {
       salon_id: salonId,
       amount: amount,
-      comment: commentInput.value.trim(),
+      comment: comment,
       client_id: clientId
     };
-
-    btn.disabled = true;
-    btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
 
     const optimistic = {
       id: clientId,
       type: 'payout',
       date: new Date().toISOString(),
-      title: 'Получено',
+      title: 'Получено' + (comment ? ': ' + comment : ''),
       amount: -amount,
       salon_id: salonId,
       status: 'pending'
     };
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
+    Storage.set(STORAGE_KEYS.DATA, State.data);
+
+    App.go('home');
 
     addPending({
       id: clientId,
@@ -411,22 +519,32 @@ const App = {
       attempts: 0
     });
 
-    try {
-      await apiCall('addPayout', { payload });
-      optimistic.status = 'saved';
-      toast('Выплата сохранена', 'success');
-      syncData(true);
-      App.go('home');
-    } catch (e) {
-      console.error('Save payout error:', e);
-      toast('Нет связи. Сохранено локально', 'error');
-      App.go('home');
-      setNetwork('offline');
-    } finally {
-      btn.disabled = false;
-      btn.innerHTML = '<i data-lucide="check"></i><span>Подтвердить</span>';
-      lucide.createIcons();
-    }
+    (async () => {
+      try {
+        await apiCall('addPayout', { payload });
+
+        const remaining = Storage.get(STORAGE_KEYS.PENDING, []).filter(o => o.id !== clientId);
+        Storage.set(STORAGE_KEYS.PENDING, remaining);
+
+        State.data.recentOps = State.data.recentOps.map(op => {
+          if (op.id === clientId) return { ...op, status: 'saved' };
+          return op;
+        });
+        Storage.set(STORAGE_KEYS.DATA, State.data);
+
+        if (State.currentScreen === 'home') renderHome();
+        updatePendingUI();
+
+        syncData(true);
+
+        toast('Выплата сохранена', 'success');
+      } catch (e) {
+        console.error('Save payout error:', e);
+        setNetwork('offline');
+        toast('Нет связи. Сохранено локально', 'error');
+        updatePendingUI();
+      }
+    })();
   },
 
   setPayoutAmount(value) {
@@ -469,17 +587,13 @@ const App = {
   showDataStatus() {
     const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
     const pending = Storage.get(STORAGE_KEYS.PENDING, []);
-    const diff = lastSync ? Math.round((Date.now() - lastSync) / 1000) : 0;
-    const timeAgo = diff < 60 ? `${diff} сек назад` :
-                    diff < 3600 ? `${Math.round(diff / 60)} мин назад` :
-                    `${Math.round(diff / 3600)} ч назад`;
 
     showModal(`
       <div class="modal-handle"></div>
       <div class="modal-title">Состояние данных</div>
       <div class="report-row">
         <span class="report-label">Последняя синхронизация</span>
-        <span class="report-value" style="font-size: 15px;">${timeAgo}</span>
+        <span class="report-value" style="font-size: 15px;">${timeAgo(lastSync)}</span>
       </div>
       <div class="report-row">
         <span class="report-label">Не отправлено</span>
@@ -504,16 +618,17 @@ const App = {
     closeModal();
     await flushPending();
     await syncData();
+    await syncFullData(true);
     toast('Обновлено', 'success');
     App.go(State.currentScreen);
   },
 
   async sendPending() {
     closeModal();
-    await flushPending();
+    const sent = await flushPending();
     const remaining = Storage.get(STORAGE_KEYS.PENDING, []);
     if (remaining.length === 0) {
-      toast('Все отправлено', 'success');
+      toast(`Все отправлено (${sent})`, 'success');
     } else {
       toast(`Не удалось отправить ${remaining.length}`, 'error');
     }
@@ -521,19 +636,13 @@ const App = {
 
   logout() {
     if (!confirm('Выйти из приложения? Данные на устройстве будут удалены.')) return;
-    Storage.remove(STORAGE_KEYS.TOKEN);
-    Storage.remove(STORAGE_KEYS.DATA);
-    Storage.remove(STORAGE_KEYS.DATA + '_full');
-    Storage.remove(STORAGE_KEYS.SALON);
-    Storage.remove(STORAGE_KEYS.PENDING);
-    Storage.remove(STORAGE_KEYS.LAST_SYNC);
+    Object.values(STORAGE_KEYS).forEach(key => Storage.remove(key));
     State.token = '';
     State.data = {
       master: { name: '', phone: '' },
       salons: [],
       totalDebt: 0,
-      recentOps: [],
-      services: {}
+      recentOps: []
     };
     State.fullData = null;
     State.currentSalonId = '';
@@ -642,7 +751,7 @@ const App = {
     }
   },
 
-  // ==================== РЕДАКТИРОВАНИЕ ВИЗИТОВ ====================
+  // ==================== РЕДАКТИРОВАНИЕ ====================
   
   showVisitDetails(visitId) {
     const services = State.fullData.transactions.filter(t => t.visit_id === visitId);
@@ -808,12 +917,13 @@ const App = {
         if (serviceDate) tx.service_date = serviceDate;
       }
       
-      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
       
       closeModal();
       toast('Сохранено', 'success');
       
       syncData(true);
+      syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
     } catch (e) {
@@ -831,12 +941,13 @@ const App = {
       payload: { transaction_id: transactionId }
     }).then(() => {
       State.fullData.transactions = State.fullData.transactions.filter(t => t.id !== transactionId);
-      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
       
       closeModal();
       toast('Услуга удалена', 'success');
       
       syncData(true);
+      syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
     }).catch(e => {
@@ -855,12 +966,13 @@ const App = {
       payload: { visit_id: visitId }
     }).then(() => {
       State.fullData.transactions = State.fullData.transactions.filter(t => t.visit_id !== visitId);
-      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
       
       closeModal();
       toast('Визит удалён', 'success');
       
       syncData(true);
+      syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
     }).catch(e => {
@@ -868,8 +980,6 @@ const App = {
       closeModal();
     });
   },
-  
-  // ==================== РЕДАКТИРОВАНИЕ ВЫПЛАТ ====================
   
   editPayout(payoutId) {
     const payout = State.fullData.payouts.find(p => p.id === payoutId);
@@ -938,12 +1048,13 @@ const App = {
         if (date) p.date = date;
       }
       
-      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
       
       closeModal();
       toast('Сохранено', 'success');
       
       syncData(true);
+      syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
     } catch (e) {
@@ -961,12 +1072,13 @@ const App = {
       payload: { payout_id: payoutId }
     }).then(() => {
       State.fullData.payouts = State.fullData.payouts.filter(p => p.id !== payoutId);
-      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
       
       closeModal();
       toast('Выплата удалена', 'success');
       
       syncData(true);
+      syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
     }).catch(e => {
@@ -1047,6 +1159,7 @@ function renderHome() {
   }
 
   lucide.createIcons();
+  updatePendingUI();
 }
 
 function renderOpItem(op) {
@@ -1174,33 +1287,29 @@ function renderPayout() {
 
 // ==================== РЕНДЕР: ЖУРНАЛ ====================
 function renderJournal() {
-  if (!State.fullData) {
-    apiCall('getFullData').then(data => {
-      if (data.success) {
-        State.fullData = {
-          transactions: data.transactions,
-          payouts: data.payouts,
-          salons: data.salons
-        };
-        Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
-        renderJournal();
-      }
-    }).catch(() => {});
-    return;
-  }
+  // Показываем сразу что есть, потом грузим свежее
+  renderJournalList();
+
+  // Загружаем полные данные если нужно
+  syncFullData().then(ok => {
+    if (ok) renderJournalList();
+  });
 
   const salonFilter = document.getElementById('journal-salon-filter');
   if (salonFilter && salonFilter.options.length <= 1) {
     salonFilter.innerHTML = '<option value="all">Все салоны</option>' +
       State.data.salons.map(s => `<option value="${s.salon_id}">${escapeHtml(s.name)}</option>`).join('');
   }
-
-  renderJournalList();
 }
 
 function renderJournalList() {
   const container = document.getElementById('journal-list');
-  if (!container || !State.fullData) return;
+  if (!container || !State.fullData) {
+    if (container && !State.fullData) {
+      container.innerHTML = '<div class="empty-state"><div class="spinner-large" style="margin: 0 auto;"></div></div>';
+    }
+    return;
+  }
 
   const filter = State.journalFilter;
   
@@ -1331,35 +1440,24 @@ function renderJournalItem(op) {
 
 // ==================== РЕНДЕР: ОТЧЁТЫ ====================
 function renderReports() {
-  if (!State.fullData) {
-    apiCall('getFullData').then(data => {
-      if (data.success) {
-        State.fullData = {
-          transactions: data.transactions,
-          payouts: data.payouts,
-          salons: data.salons
-        };
-        Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
-        renderReports();
+  renderReportsContent();
+
+  syncFullData().then(ok => {
+    if (ok) {
+      initMonthPicker();
+      const monthPicker = document.getElementById('reports-month-picker');
+      if (monthPicker) {
+        monthPicker.style.display = State.reportsFilter.period === 'month' ? 'block' : 'none';
       }
-    }).catch(() => {});
-    return;
-  }
+      renderReportsContent();
+    }
+  });
 
   const salonFilter = document.getElementById('reports-salon-filter');
   if (salonFilter && salonFilter.options.length <= 1) {
     salonFilter.innerHTML = '<option value="all">Все салоны</option>' +
       State.data.salons.map(s => `<option value="${s.salon_id}">${escapeHtml(s.name)}</option>`).join('');
   }
-
-  initMonthPicker();
-
-  const monthPicker = document.getElementById('reports-month-picker');
-  if (monthPicker) {
-    monthPicker.style.display = State.reportsFilter.period === 'month' ? 'block' : 'none';
-  }
-
-  renderReportsContent();
 }
 
 function initMonthPicker() {
@@ -1431,6 +1529,8 @@ function getPeriodRange(period) {
 }
 
 function renderReportsContent() {
+  if (!State.fullData) return;
+
   const filter = State.reportsFilter;
   const period = filter.period;
 
@@ -1563,15 +1663,7 @@ function renderSettings() {
   const salonsEl = document.getElementById('settings-salons-count');
   if (salonsEl) salonsEl.textContent = `${State.data.salons.length} из 3`;
 
-  const syncEl = document.getElementById('settings-sync');
-  if (syncEl) {
-    const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
-    const diff = lastSync ? Math.round((Date.now() - lastSync) / 1000) : 0;
-    const timeAgo = diff < 60 ? 'только что' :
-                    diff < 3600 ? `${Math.round(diff / 60)} мин назад` :
-                    `${Math.round(diff / 3600)} ч назад`;
-    syncEl.textContent = `Синхронизация: ${timeAgo}`;
-  }
+  updatePendingUI();
 }
 
 // ==================== РЕНДЕР: САЛОНЫ ====================
@@ -1720,7 +1812,6 @@ function closeModal() {
   App.closeModal();
 }
 
-// ==================== МОДАЛКА ЗАГРУЗКИ ====================
 function showLoadingModal(text = 'Загрузка...') {
   showModal(`
     <div class="modal-handle"></div>
@@ -1778,8 +1869,6 @@ async function handleAuth() {
     Storage.set(STORAGE_KEYS.DATA, State.data);
     Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
 
-    syncData(true);
-
     App.go('home');
   } catch (e) {
     console.error('Auth error:', e);
@@ -1802,8 +1891,9 @@ async function init() {
 
   State.token = token;
 
+  // Мгновенно грузим из кэша
   const cachedData = Storage.get(STORAGE_KEYS.DATA);
-  const cachedFull = Storage.get(STORAGE_KEYS.DATA + '_full');
+  const cachedFull = Storage.get(STORAGE_KEYS.DATA_FULL);
   const cachedSalon = Storage.get(STORAGE_KEYS.SALON, '');
 
   if (cachedData) {
@@ -1811,6 +1901,7 @@ async function init() {
   }
   if (cachedFull) {
     State.fullData = cachedFull;
+    State.fullDataLoadedAt = Storage.get(STORAGE_KEYS.LAST_FULL_SYNC, 0);
   }
   if (cachedSalon) {
     State.currentSalonId = cachedSalon;
@@ -1818,12 +1909,14 @@ async function init() {
     State.currentSalonId = State.data.salons[0].salon_id;
   }
 
+  // Сразу показываем главный экран
   if (cachedData && cachedData.salons && cachedData.salons.length > 0) {
     App.go('home');
   } else {
     showScreen('loading');
   }
 
+  // В фоне — синхронизация и pending
   setTimeout(async () => {
     await flushPending();
     const ok = await syncData();
@@ -1833,6 +1926,20 @@ async function init() {
       renderHome();
     }
   }, 50);
+
+  // Автосинхронизация каждые 5 минут
+  setInterval(async () => {
+    if (State.network === 'offline') return;
+    await flushPending();
+    await syncData(true);
+  }, SYNC_INTERVAL);
+
+  // Онлайн/оффлайн
+  window.addEventListener('online', async () => {
+    await flushPending();
+    syncData(true);
+  });
+  window.addEventListener('offline', () => setNetwork('offline'));
 }
 
 // ==================== EVENTS ====================
@@ -1907,12 +2014,6 @@ document.addEventListener('DOMContentLoaded', () => {
       App.go(servicePickerMode === 'salon-edit' ? 'salon-edit' : 'add-visit');
     });
   }
-
-  window.addEventListener('online', () => {
-    flushPending();
-    syncData(true);
-  });
-  window.addEventListener('offline', () => setNetwork('offline'));
 
   init();
 
