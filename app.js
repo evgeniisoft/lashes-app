@@ -1051,6 +1051,10 @@ function renderReportsContent() {
   const earned = transactions.reduce((sum, t) => sum + t.master_earnings, 0);
   const received = payouts.reduce((sum, p) => sum + p.amount, 0);
 
+    // Считаем уникальные визиты (по visit_id)
+  const uniqueVisits = new Set(transactions.map(t => t.visit_id).filter(Boolean));
+  const visitsCount = uniqueVisits.size;
+
   const summaryEl = document.getElementById('reports-summary');
   if (summaryEl) {
     summaryEl.innerHTML = `
@@ -1064,6 +1068,10 @@ function renderReportsContent() {
       </div>
       <div class="report-row">
         <span class="report-label">Визитов</span>
+        <span class="report-value" style="font-size: 16px;">${visitsCount}</span>
+      </div>
+      <div class="report-row">
+        <span class="report-label">Услуг оказано</span>
         <span class="report-value" style="font-size: 16px;">${transactions.length}</span>
       </div>
     `;
