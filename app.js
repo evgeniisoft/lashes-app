@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v3.3
-   Фиксы: поиск, спиннеры, копирование услуг, кэш, редактирование
+   LASHES APP — APP.JS v3.4
+   Фиксы: поиск, спиннеры, копирование, кэш, гонки запросов
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -33,7 +33,7 @@ const State = {
   },
   fullData: null,
   fullDataLoadedAt: 0,
-  servicesCache: {},         // { salon_id: { services: [], loadedAt: timestamp } }
+  servicesCache: {},
   pending: [],
   currentSalonId: '',
   currentScreen: 'loading',
@@ -42,11 +42,11 @@ const State = {
   lastOnlineAt: Date.now(),
   draftVisit: { services: [] },
   editingSalonId: null,
+  _renderSalonToken: 0,
   journalFilter: { salon: 'all', type: 'all' },
   reportsFilter: { salon: 'all', period: 'month', month: '' }
 };
 
-// Глобальные id интервалов
 let servicePickerWaitInterval = null;
 let autoSyncInterval = null;
 let alertCheckInterval = null;
@@ -347,7 +347,7 @@ UserAgent: ${navigator.userAgent}
     Alerts.remove('syncing');
     Alerts.add('syncing', 'info', 'Синхронизация', 'Попытка синхронизации...');
     
-    clearServicesCache(); // Сбросить кэш услуг
+    clearServicesCache();
     await flushPending();
     const ok = await syncData(true);
     const fullOk = await syncFullData(true);
@@ -556,6 +556,41 @@ function setNetwork(status) {
   Alerts.check();
 }
 
+// ==================== СИНХРОНИЗАЦИЯ recentOps С pending ====================
+function syncRecentOpsWithPending() {
+  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+  const pendingIds = pending.map(p => p.id);
+  
+  State.data.recentOps = State.data.recentOps.map(op => {
+    if (op.status === 'pending' && !pendingIds.includes(op.id)) {
+      return { ...op, status: 'saved' };
+    }
+    return op;
+  });
+}
+
+// Мерджим серверные recentOps с локальными pending — чтобы не потерять
+function mergeRecentOps(serverOps) {
+  const localPending = (State.data.recentOps || []).filter(op => op.status === 'pending');
+  
+  if (localPending.length === 0) {
+    return serverOps;
+  }
+  
+  // Убираем с сервера те, что уже есть в pending
+  const pendingIds = localPending.map(p => p.id);
+  const serverFiltered = (serverOps || []).filter(op => !pendingIds.includes(op.id));
+  
+  // Сливаем: pending сверху, потом серверные
+  const merged = [...localPending, ...serverFiltered];
+  
+  // Сортируем по дате
+  merged.sort((a, b) => new Date(b.date || b.service_date) - new Date(a.date || a.service_date));
+  
+  // Ограничиваем 20
+  return merged.slice(0, 20);
+}
+
 async function syncData(silent = false) {
   if (!State.token) return false;
   if (State.syncing) return true;
@@ -570,7 +605,8 @@ async function syncData(silent = false) {
       State.data.master = quick.master;
       State.data.salons = quick.salons;
       State.data.totalDebt = quick.totalDebt;
-      State.data.recentOps = quick.recentOps;
+      // Мерджим recentOps с локальными pending
+      State.data.recentOps = mergeRecentOps(quick.recentOps);
 
       Storage.set(STORAGE_KEYS.DATA, State.data);
       Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
@@ -657,6 +693,14 @@ async function flushPending() {
 
   if (sent > 0 && State.currentScreen === 'home') {
     renderHome();
+  }
+
+  // Если что-то отправилось — подтянем полные данные
+  if (sent > 0) {
+    syncFullData(true).then(() => {
+      if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
+    });
   }
 
   return sent;
@@ -851,6 +895,7 @@ const App = {
 
         syncFullData(true).then(() => {
           if (State.currentScreen === 'journal') renderJournalList();
+          if (State.currentScreen === 'reports') renderReportsContent();
         });
 
         syncData(true);
@@ -948,6 +993,7 @@ const App = {
 
         syncFullData(true).then(() => {
           if (State.currentScreen === 'journal') renderJournalList();
+          if (State.currentScreen === 'reports') renderReportsContent();
         });
 
         syncData(true);
@@ -1036,7 +1082,7 @@ const App = {
 
   async forceRefresh() {
     closeModal();
-    clearServicesCache(); // Сброс кэша услуг
+    clearServicesCache();
     await flushPending();
     await syncData();
     await syncFullData(true);
@@ -1068,6 +1114,7 @@ const App = {
     State.fullData = null;
     State.currentSalonId = '';
     State.servicesCache = {};
+    State.editingSalonId = null;
     Alerts.clear();
     App.go('auth');
   },
@@ -1095,17 +1142,18 @@ const App = {
         });
         toast('Сохранено', 'success');
       } else {
-        const result = await apiCall('manageSalon', {
+        await apiCall('manageSalon', {
           salon_action: 'create',
           payload: { name, default_percent: percent }
         });
         toast('Салон создан', 'success');
-        
-        // Сохраняем ID нового салона для возможного копирования услуг
-        State._newSalonId = result.salon_id;
       }
       
-      clearServicesCache(); // Сброс кэша — вдруг что-то поменялось
+      // Сброс кнопки перед уходом
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
+      
+      clearServicesCache();
       await syncData();
       App.go('salons');
     } catch (e) {
@@ -1122,16 +1170,16 @@ const App = {
     const salon = State.data.salons.find(s => s.salon_id === State.editingSalonId);
     const salonName = salon ? salon.name : '';
     
-    if (!confirm(`Удалить салон "${salonName}"?\n\nВизиты и выплаты этого салона ОСТАНУТСЯ в таблице, но будут скрыты из интерфейса. Отменить это действие нельзя.`)) return;
+    if (!confirm(`Удалить салон "${salonName}"?\n\nВизиты и выплаты этого салона ОСТАНУТСЯ в таблице, но будут скрыты из интерфейса.\n\nУслуги салона будут скрыты из каталога.\n\nОтменить это действие нельзя.`)) return;
 
     try {
-      await apiCall('manageSalon', {
+      const result = await apiCall('manageSalon', {
         salon_action: 'delete',
         payload: { salon_id: State.editingSalonId }
       });
       clearServicesCache(State.editingSalonId);
       await syncData();
-      toast('Салон удалён', 'success');
+      toast(result.message || 'Салон удалён', 'success');
       App.go('salons');
     } catch (e) {
       toast('Ошибка: ' + e.message, 'error');
@@ -1140,7 +1188,6 @@ const App = {
 
   editSalon(salonId) {
     State.editingSalonId = salonId;
-    State._newSalonId = null;
     App.go('salon-edit');
   },
 
@@ -1254,7 +1301,7 @@ const App = {
     const service = cached.find(s => s.service_id === serviceId);
     
     if (!service) {
-      toast('Услуга не найдена', 'error');
+      toast('Услуга не найдена. Обновите список.', 'error');
       return;
     }
     
@@ -1485,7 +1532,6 @@ const App = {
       return;
     }
     
-    // Валидация даты
     if (!dateInput) {
       toast('Введите дату', 'error');
       return;
@@ -1548,6 +1594,7 @@ const App = {
       syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
     } catch (e) {
       toast('Ошибка: ' + e.message, 'error');
       closeModal();
@@ -1572,6 +1619,7 @@ const App = {
       syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
     }).catch(e => {
       toast('Ошибка: ' + e.message, 'error');
       closeModal();
@@ -1599,6 +1647,7 @@ const App = {
       syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
     }).catch(e => {
       toast('Ошибка: ' + e.message, 'error');
       closeModal();
@@ -1713,6 +1762,7 @@ const App = {
       syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
     } catch (e) {
       toast('Ошибка: ' + e.message, 'error');
       closeModal();
@@ -1737,6 +1787,7 @@ const App = {
       syncFullData(true);
       
       if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
     }).catch(e => {
       toast('Ошибка: ' + e.message, 'error');
       closeModal();
@@ -1756,6 +1807,15 @@ function showScreen(name) {
   if (name !== 'service-picker' && servicePickerWaitInterval) {
     clearInterval(servicePickerWaitInterval);
     servicePickerWaitInterval = null;
+  }
+  
+  // Сброс кнопки "Сохранить" при уходе с salon-edit
+  if (name !== 'salon-edit') {
+    const saveBtn = document.getElementById('btn-save-salon');
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
+    }
   }
   
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
@@ -2359,19 +2419,35 @@ function renderSalonEdit() {
   const isNew = !State.editingSalonId;
   const salon = isNew ? { name: '', default_percent: 50 } : State.data.salons.find(s => s.salon_id === State.editingSalonId);
 
+  if (!isNew && !salon) {
+    toast('Салон не найден', 'error');
+    App.go('salons');
+    return;
+  }
+
   const titleEl = document.getElementById('salon-edit-title');
   const nameEl = document.getElementById('salon-edit-name');
   const percentEl = document.getElementById('salon-edit-percent');
   const deleteBtn = document.getElementById('btn-delete-salon');
+  const saveBtn = document.getElementById('btn-save-salon');
+
+  // СБРОС КНОПКИ "СОХРАНИТЬ"
+  if (saveBtn) {
+    saveBtn.disabled = false;
+    saveBtn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
+  }
 
   if (titleEl) titleEl.textContent = isNew ? 'Новый салон' : escapeHtml(salon.name);
   if (nameEl) nameEl.value = salon.name || '';
   if (percentEl) percentEl.value = salon.default_percent || 50;
   if (deleteBtn) deleteBtn.style.display = isNew || State.data.salons.length <= 1 ? 'none' : 'flex';
 
+  // Гонки запросов — токен рендера
+  State._renderSalonToken++;
+  const currentToken = State._renderSalonToken;
+
   const servicesEl = document.getElementById('salon-services-list');
   if (servicesEl && !isNew) {
-    // Показываем спиннер сразу
     servicesEl.innerHTML = `
       <div class="empty-state">
         <div class="spinner-large" style="margin: 0 auto;"></div>
@@ -2379,6 +2455,10 @@ function renderSalonEdit() {
     `;
     
     fetchServices(salon.salon_id).then(services => {
+      // Если за это время открыли другой салон — игнорируем
+      if (State._renderSalonToken !== currentToken) return;
+      if (State.editingSalonId !== salon.salon_id) return;
+      
       if (services && services.length > 0) {
         servicesEl.innerHTML = services.map(s => `
           <div class="service-item clickable" onclick="App.editSalonService('${s.service_id}')">
@@ -2398,6 +2478,9 @@ function renderSalonEdit() {
       }
       lucide.createIcons();
     }).catch(e => {
+      if (State._renderSalonToken !== currentToken) return;
+      if (State.editingSalonId !== salon.salon_id) return;
+      
       console.error('Load services error:', e);
       servicesEl.innerHTML = `
         <div class="empty-state">
@@ -2415,7 +2498,7 @@ function renderSalonEdit() {
     servicesEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Сохраните салон, потом добавьте услуги</div>';
   }
   
-  // Кнопка "Скопировать услуги из другого салона" — показываем, если есть другие салоны
+  // Кнопка "Скопировать услуги"
   const copyBtn = document.getElementById('btn-copy-services');
   if (copyBtn) {
     const otherSalons = State.data.salons.filter(s => s.salon_id !== State.editingSalonId);
@@ -2531,14 +2614,12 @@ function renderServicePicker(mode) {
     return;
   }
 
-  // Показываем кэш сразу
   const cachedServices = getCachedServices(salonId);
   if (cachedServices) {
     renderServicePickerList(cachedServices);
     return;
   }
   
-  // Загружаем
   listEl.innerHTML = `
     <div class="empty-state">
       <div class="spinner-large" style="margin: 0 auto 16px;"></div>
@@ -2672,20 +2753,6 @@ async function handleAuth() {
   }
 }
 
-// ==================== СИНХРОНИЗАЦИЯ recentOps С pending ====================
-function syncRecentOpsWithPending() {
-  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
-  const pendingIds = pending.map(p => p.id);
-  
-  State.data.recentOps = State.data.recentOps.map(op => {
-    if (op.status === 'pending' && !pendingIds.includes(op.id)) {
-      // Операция больше не в pending — значит успешно отправлена
-      return { ...op, status: 'saved' };
-    }
-    return op;
-  });
-}
-
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 async function init() {
   lucide.createIcons();
@@ -2704,7 +2771,6 @@ async function init() {
 
   if (cachedData) {
     State.data = cachedData;
-    // Синхронизируем статусы с pending
     syncRecentOpsWithPending();
   }
   if (cachedFull) {
@@ -2732,7 +2798,6 @@ async function init() {
     }
   }, 50);
 
-  // Автосинхронизация
   if (autoSyncInterval) clearInterval(autoSyncInterval);
   autoSyncInterval = setInterval(async () => {
     if (State.network === 'offline') return;
@@ -2740,14 +2805,14 @@ async function init() {
     await syncData(true);
   }, SYNC_INTERVAL);
 
-  // Проверка алертов
   Alerts.check();
   if (alertCheckInterval) clearInterval(alertCheckInterval);
   alertCheckInterval = setInterval(() => Alerts.check(), ALERT_CHECK_INTERVAL);
 
   window.addEventListener('online', async () => {
     await flushPending();
-    syncData(true);
+    await syncData(true);
+    await syncFullData(true);
   });
   window.addEventListener('offline', () => setNetwork('offline'));
 }
@@ -2818,7 +2883,6 @@ document.addEventListener('DOMContentLoaded', () => {
     App.go('salon-edit');
   });
   
-  // Кнопка "Скопировать услуги"
   const copyServicesBtn = document.getElementById('btn-copy-services');
   if (copyServicesBtn) {
     copyServicesBtn.addEventListener('click', () => {
