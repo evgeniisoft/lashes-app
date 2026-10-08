@@ -1,5 +1,5 @@
 /* ============================================================
-   LASHES APP — APP.JS v3.0
+   LASHES APP — APP.JS v3.1
    Оптимизация: раздельные запросы, pending в UI, автосинк
    ============================================================ */
 
@@ -17,7 +17,7 @@ const STORAGE_KEYS = {
 };
 
 const SYNC_INTERVAL = 5 * 60 * 1000; // 5 минут
-const FULL_DATA_TTL = 5 * 60 * 1000; // 5 минут — данные в full считаются свежими
+const FULL_DATA_TTL = 5 * 60 * 1000; // 5 минут
 
 // ==================== СОСТОЯНИЕ ====================
 const State = {
@@ -40,6 +40,10 @@ const State = {
   journalFilter: { salon: 'all', type: 'all' },
   reportsFilter: { salon: 'all', period: 'month', month: '' }
 };
+
+// Глобальные id интервалов
+let servicePickerWaitInterval = null;
+let autoSyncInterval = null;
 
 // ==================== УТИЛИТЫ ====================
 function uuid() {
@@ -183,10 +187,9 @@ function setNetwork(status) {
   }
 }
 
-// Только быстрые данные — для главного экрана
 async function syncData(silent = false) {
   if (!State.token) return false;
-  if (State.syncing) return true; // Уже в процессе
+  if (State.syncing) return true;
 
   State.syncing = true;
   setNetwork('syncing');
@@ -215,11 +218,9 @@ async function syncData(silent = false) {
   }
 }
 
-// Полные данные — только для Журнала и Отчётов
 async function syncFullData(force = false) {
   if (!State.token) return false;
 
-  // Если недавно грузили — не грузим снова
   if (!force && State.fullData && (Date.now() - State.fullDataLoadedAt < FULL_DATA_TTL)) {
     return true;
   }
@@ -264,7 +265,6 @@ async function flushPending() {
       }
       sent++;
 
-      // Обновляем recentOps — статус saved
       State.data.recentOps = State.data.recentOps.map(op2 => {
         if (op2.id === op.id) return { ...op2, status: 'saved' };
         return op2;
@@ -301,7 +301,6 @@ function updatePendingUI() {
   const pending = Storage.get(STORAGE_KEYS.PENDING, []);
   setNetwork(State.network);
 
-  // Обновляем настройки — статус
   const syncEl = document.getElementById('settings-sync');
   if (syncEl) {
     if (pending.length > 0) {
@@ -350,6 +349,19 @@ const App = {
   },
 
   openServicePicker() {
+    if (!State.data.salons || State.data.salons.length === 0) {
+      toast('Загрузка... подождите секунду', 'error');
+      syncData(true).then(() => {
+        if (State.data.salons && State.data.salons.length > 0) {
+          renderServicePicker('visit');
+          showScreen('service-picker');
+        } else {
+          toast('Не удалось загрузить салоны', 'error');
+        }
+      });
+      return;
+    }
+
     renderServicePicker('visit');
     showScreen('service-picker');
   },
@@ -401,7 +413,7 @@ const App = {
       }))
     };
 
-    // ОПТИМИСТИЧНО: сразу добавляем в recentOps
+    // ОПТИМИСТИЧНО: добавляем в recentOps
     const optimistic = {
       id: clientId,
       type: 'visit',
@@ -415,10 +427,8 @@ const App = {
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
     Storage.set(STORAGE_KEYS.DATA, State.data);
 
-    // Сразу переходим на главную — не ждём сервер
     App.go('home');
 
-    // Добавляем в pending заранее (защита от сбоя)
     addPending({
       id: clientId,
       type: 'add_visit',
@@ -427,12 +437,10 @@ const App = {
       attempts: 0
     });
 
-    // Пытаемся отправить в фоне
     (async () => {
       try {
         await apiCall('addVisit', { payload });
 
-        // Успех — убираем из pending, меняем статус
         const remaining = Storage.get(STORAGE_KEYS.PENDING, []).filter(o => o.id !== clientId);
         Storage.set(STORAGE_KEYS.PENDING, remaining);
 
@@ -445,7 +453,12 @@ const App = {
         if (State.currentScreen === 'home') renderHome();
         updatePendingUI();
 
-        // Тихо обновляем с сервера
+        // Обновляем полный кэш в фоне (для Журнала и Отчётов)
+        syncFullData(true).then(() => {
+          if (State.currentScreen === 'journal') renderJournalList();
+        });
+
+        // Тихо обновляем быстрые данные
         syncData(true);
 
         toast('Визит сохранён', 'success');
@@ -457,7 +470,6 @@ const App = {
       }
     })();
 
-    // Очищаем форму
     State.draftVisit = { services: [] };
   },
 
@@ -534,6 +546,10 @@ const App = {
 
         if (State.currentScreen === 'home') renderHome();
         updatePendingUI();
+
+        syncFullData(true).then(() => {
+          if (State.currentScreen === 'journal') renderJournalList();
+        });
 
         syncData(true);
 
@@ -754,6 +770,11 @@ const App = {
   // ==================== РЕДАКТИРОВАНИЕ ====================
   
   showVisitDetails(visitId) {
+    if (!State.fullData) {
+      toast('Данные загружаются', 'error');
+      return;
+    }
+
     const services = State.fullData.transactions.filter(t => t.visit_id === visitId);
     if (services.length === 0) {
       toast('Визит не найден', 'error');
@@ -803,6 +824,8 @@ const App = {
   },
   
   editTransaction(transactionId) {
+    if (!State.fullData) return;
+    
     const transaction = State.fullData.transactions.find(t => t.id === transactionId);
     if (!transaction) {
       toast('Услуга не найдена', 'error');
@@ -957,6 +980,8 @@ const App = {
   },
   
   confirmDeleteVisit(visitId) {
+    if (!State.fullData) return;
+
     const count = State.fullData.transactions.filter(t => t.visit_id === visitId).length;
     if (!confirm(`Удалить весь визит (${count} услуг)? Действие необратимо.`)) return;
     
@@ -982,6 +1007,8 @@ const App = {
   },
   
   editPayout(payoutId) {
+    if (!State.fullData) return;
+
     const payout = State.fullData.payouts.find(p => p.id === payoutId);
     if (!payout) {
       toast('Выплата не найдена', 'error');
@@ -1097,6 +1124,12 @@ const App = {
 
 // ==================== ПОКАЗ ЭКРАНА ====================
 function showScreen(name) {
+  // Если уходим с экрана service-picker — чистим interval
+  if (name !== 'service-picker' && servicePickerWaitInterval) {
+    clearInterval(servicePickerWaitInterval);
+    servicePickerWaitInterval = null;
+  }
+  
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
   const el = document.getElementById('screen-' + name);
   if (el) el.classList.add('active');
@@ -1287,10 +1320,8 @@ function renderPayout() {
 
 // ==================== РЕНДЕР: ЖУРНАЛ ====================
 function renderJournal() {
-  // Показываем сразу что есть, потом грузим свежее
   renderJournalList();
 
-  // Загружаем полные данные если нужно
   syncFullData().then(ok => {
     if (ok) renderJournalList();
   });
@@ -1304,10 +1335,11 @@ function renderJournal() {
 
 function renderJournalList() {
   const container = document.getElementById('journal-list');
-  if (!container || !State.fullData) {
-    if (container && !State.fullData) {
-      container.innerHTML = '<div class="empty-state"><div class="spinner-large" style="margin: 0 auto;"></div></div>';
-    }
+  if (!container) return;
+
+  // Если нет полных данных — показываем спиннер
+  if (!State.fullData) {
+    container.innerHTML = '<div class="empty-state"><div class="spinner-large" style="margin: 0 auto;"></div></div>';
     return;
   }
 
@@ -1734,15 +1766,55 @@ let servicePickerMode = 'visit';
 
 function renderServicePicker(mode) {
   servicePickerMode = mode;
-  const salon = mode === 'salon-edit' ? 
-    State.data.salons.find(s => s.salon_id === State.editingSalonId) :
-    App.getCurrentSalon();
-
+  
   const titleEl = document.getElementById('service-picker-title');
   if (titleEl) titleEl.textContent = mode === 'salon-edit' ? 'Добавить услугу в прайс' : 'Выберите услугу';
 
   const listEl = document.getElementById('service-picker-list');
   if (!listEl) return;
+
+  // Если в режиме добавления визита, но салоны ещё не загружены — ждём
+  if (mode === 'visit' && (!State.data.salons || State.data.salons.length === 0)) {
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <div class="spinner-large" style="margin: 0 auto 16px;"></div>
+        <div class="empty-state-text">Загрузка...</div>
+      </div>
+    `;
+    
+    // Очищаем предыдущий interval
+    if (servicePickerWaitInterval) {
+      clearInterval(servicePickerWaitInterval);
+      servicePickerWaitInterval = null;
+    }
+    
+    let attempts = 0;
+    servicePickerWaitInterval = setInterval(() => {
+      attempts++;
+      if (State.data.salons && State.data.salons.length > 0) {
+        clearInterval(servicePickerWaitInterval);
+        servicePickerWaitInterval = null;
+        renderServicePicker(mode);
+      } else if (attempts > 30) {
+        clearInterval(servicePickerWaitInterval);
+        servicePickerWaitInterval = null;
+        listEl.innerHTML = `
+          <div class="empty-state">
+            <i data-lucide="alert-circle"></i>
+            <div class="empty-state-text">Не удалось загрузить данные</div>
+            <p class="text-small text-muted mt-16">Проверьте интернет и попробуйте снова</p>
+          </div>
+        `;
+        lucide.createIcons();
+      }
+    }, 300);
+    
+    return;
+  }
+
+  const salon = mode === 'salon-edit' ? 
+    State.data.salons.find(s => s.salon_id === State.editingSalonId) :
+    App.getCurrentSalon();
 
   if (mode === 'salon-edit') {
     listEl.innerHTML = `
@@ -1765,9 +1837,21 @@ function renderServicePicker(mode) {
 
   const salonId = salon?.salon_id;
   if (!salonId) {
-    listEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">Салон не выбран</div></div>';
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="alert-circle"></i>
+        <div class="empty-state-text">Салон не выбран</div>
+      </div>
+    `;
+    lucide.createIcons();
     return;
   }
+
+  listEl.innerHTML = `
+    <div class="empty-state">
+      <div class="spinner-large" style="margin: 0 auto 16px;"></div>
+    </div>
+  `;
 
   apiCall('getServices', { salon_id: salonId }).then(data => {
     if (!data.success || !data.services || data.services.length === 0) {
@@ -1792,7 +1876,17 @@ function renderServicePicker(mode) {
     `).join('');
     lucide.createIcons();
   }).catch(e => {
-    listEl.innerHTML = `<div class="empty-state"><div class="empty-state-text">Ошибка загрузки</div></div>`;
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="alert-circle"></i>
+        <div class="empty-state-text">Ошибка загрузки</div>
+        <button class="btn btn-secondary mt-16" onclick="renderServicePicker('${mode}')">
+          <i data-lucide="refresh-cw"></i>
+          <span>Повторить</span>
+        </button>
+      </div>
+    `;
+    lucide.createIcons();
   });
 }
 
@@ -1891,7 +1985,6 @@ async function init() {
 
   State.token = token;
 
-  // Мгновенно грузим из кэша
   const cachedData = Storage.get(STORAGE_KEYS.DATA);
   const cachedFull = Storage.get(STORAGE_KEYS.DATA_FULL);
   const cachedSalon = Storage.get(STORAGE_KEYS.SALON, '');
@@ -1909,32 +2002,31 @@ async function init() {
     State.currentSalonId = State.data.salons[0].salon_id;
   }
 
-  // Сразу показываем главный экран
   if (cachedData && cachedData.salons && cachedData.salons.length > 0) {
     App.go('home');
   } else {
     showScreen('loading');
   }
 
-  // В фоне — синхронизация и pending
   setTimeout(async () => {
     await flushPending();
     const ok = await syncData();
-    if (ok && State.currentScreen !== 'home') {
-      App.go('home');
-    } else if (ok) {
+    
+    // Обновляем UI только если всё ещё на главном
+    // Не переключаем экран принудительно
+    if (ok && State.currentScreen === 'home') {
       renderHome();
     }
   }, 50);
 
-  // Автосинхронизация каждые 5 минут
-  setInterval(async () => {
+  // Автосинхронизация
+  if (autoSyncInterval) clearInterval(autoSyncInterval);
+  autoSyncInterval = setInterval(async () => {
     if (State.network === 'offline') return;
     await flushPending();
     await syncData(true);
   }, SYNC_INTERVAL);
 
-  // Онлайн/оффлайн
   window.addEventListener('online', async () => {
     await flushPending();
     syncData(true);
