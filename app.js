@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v2.0
-   Мгновенная загрузка, оффлайн, салоны
+   LASHES APP — APP.JS v2.1
+   Мгновенная загрузка, оффлайн, салоны, исправленные отчёты
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -22,17 +22,17 @@ const State = {
     salons: [],
     totalDebt: 0,
     recentOps: [],
-    services: {} // { salon_id: [services] }
+    services: {}
   },
-  fullData: null, // все транзакции/выплаты
-  pending: [],    // очередь неотправленного
+  fullData: null,
+  pending: [],
   currentSalonId: '',
   currentScreen: 'loading',
-  network: 'online', // online | syncing | offline
+  network: 'online',
   draftVisit: { services: [] },
   editingSalonId: null,
   journalFilter: { salon: 'all', type: 'all' },
-  reportsFilter: { salon: 'all', period: 'month' }
+  reportsFilter: { salon: 'all', period: 'month', month: '' }
 };
 
 // ==================== УТИЛИТЫ ====================
@@ -161,7 +161,7 @@ function setNetwork(status) {
 }
 
 async function syncData(silent = false) {
-  if (!State.token) return;
+  if (!State.token) return false;
   setNetwork('syncing');
 
   try {
@@ -185,7 +185,6 @@ async function syncData(silent = false) {
       };
     }
 
-    // Сохраняем в localStorage
     Storage.set(STORAGE_KEYS.DATA, State.data);
     if (State.fullData) Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
     Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
@@ -212,7 +211,6 @@ async function flushPending() {
       } else if (op.type === 'add_payout') {
         await apiCall('addPayout', { payload: op.payload });
       }
-      // Успех — не сохраняем
     } catch (e) {
       console.error('Pending error:', e);
       op.attempts = (op.attempts || 0) + 1;
@@ -221,19 +219,12 @@ async function flushPending() {
   }
 
   Storage.set(STORAGE_KEYS.PENDING, remaining);
-  updatePendingIndicator();
 }
 
 function addPending(op) {
   const pending = Storage.get(STORAGE_KEYS.PENDING, []);
   pending.push(op);
   Storage.set(STORAGE_KEYS.PENDING, pending);
-  updatePendingIndicator();
-}
-
-function updatePendingIndicator() {
-  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
-  // Можем использовать в будущем для индикатора
 }
 
 // ==================== ГЛАВНЫЙ РОУТЕР ====================
@@ -272,7 +263,6 @@ const App = {
     updateBottomNav(screen);
   },
 
-  // ==================== ДОБАВЛЕНИЕ ВИЗИТА ====================
   openServicePicker() {
     renderServicePicker('visit');
     showScreen('service-picker');
@@ -319,11 +309,9 @@ const App = {
       }))
     };
 
-    // Блокируем кнопку
     btn.disabled = true;
     btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
 
-    // Оптимистичное обновление UI
     const optimistic = {
       id: clientId,
       type: 'visit',
@@ -339,7 +327,6 @@ const App = {
     };
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
 
-    // Добавляем в pending
     addPending({
       id: clientId,
       type: 'add_visit',
@@ -348,13 +335,10 @@ const App = {
       attempts: 0
     });
 
-    // Отправляем
     try {
       await apiCall('addVisit', { payload });
-      // Успех — обновляем статус
       optimistic.status = 'saved';
       toast('Визит сохранён', 'success');
-      // Синхронизация в фоне
       syncData(true);
       App.go('home');
     } catch (e) {
@@ -381,7 +365,6 @@ const App = {
     renderVisitServices();
   },
 
-  // ==================== ВЫПЛАТА ====================
   async savePayout() {
     const btn = document.getElementById('btn-save-payout');
     const salonId = State.currentSalonId;
@@ -409,7 +392,6 @@ const App = {
     btn.disabled = true;
     btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
 
-    // Оптимистично
     const optimistic = {
       id: clientId,
       type: 'payout',
@@ -459,7 +441,6 @@ const App = {
     }
   },
 
-  // ==================== САЛОНЫ ====================
   switchSalon(salonId) {
     State.currentSalonId = salonId;
     Storage.set(STORAGE_KEYS.SALON, salonId);
@@ -472,7 +453,6 @@ const App = {
     return State.data.salons.find(s => s.salon_id === State.currentSalonId) || State.data.salons[0];
   },
 
-  // ==================== НАСТРОЙКИ ====================
   showProfile() {
     const name = State.data.master.name || 'Мастер';
     showModal(`
@@ -560,7 +540,6 @@ const App = {
     App.go('auth');
   },
 
-  // ==================== УПРАВЛЕНИЕ САЛОНАМИ ====================
   async saveSalon() {
     const nameInput = document.getElementById('salon-edit-name');
     const percentInput = document.getElementById('salon-edit-percent');
@@ -621,7 +600,6 @@ const App = {
     App.go('salon-edit');
   },
 
-  // ==================== УПРАВЛЕНИЕ УСЛУГАМИ ====================
   showServicesManage() {
     const salons = State.data.salons;
     showModal(`
@@ -683,7 +661,6 @@ function showScreen(name) {
 function updateBottomNav(screen) {
   const nav = document.getElementById('bottom-nav');
   if (!nav) return;
-  // Скрываем навигацию на некоторых экранах
   const hideNav = ['add-visit', 'payout', 'salon-edit', 'service-picker', 'auth', 'loading'];
   if (hideNav.includes(screen)) {
     nav.style.display = 'none';
@@ -697,14 +674,12 @@ function updateBottomNav(screen) {
 
 // ==================== РЕНДЕР: ГЛАВНАЯ ====================
 function renderHome() {
-  // Общая сумма
   const debtEl = document.getElementById('total-debt');
   if (debtEl) {
     debtEl.textContent = formatMoney(State.data.totalDebt);
     debtEl.classList.toggle('zero', State.data.totalDebt <= 0);
   }
 
-  // Список салонов
   const salonList = document.getElementById('salon-list');
   if (salonList) {
     if (State.data.salons.length <= 1) {
@@ -723,7 +698,6 @@ function renderHome() {
     }
   }
 
-  // Последние операции
   const opsEl = document.getElementById('recent-ops');
   if (opsEl) {
     const ops = (State.data.recentOps || []).slice(0, 5);
@@ -797,7 +771,6 @@ function renderVisitServices() {
     `;
   } else {
     container.innerHTML = services.map((s, i) => {
-      const finalPrice = s.full_price - (s.full_price * s.discount_percent / 100);
       return `
         <div class="service-item">
           <div class="service-item-main">
@@ -848,7 +821,6 @@ function renderPayout() {
   if (debtEl) debtEl.textContent = formatMoney(salon.debt);
   if (amountInput) amountInput.value = '';
 
-  // Быстрые суммы
   const quickEl = document.getElementById('quick-amounts');
   if (quickEl) {
     const debt = salon.debt;
@@ -870,7 +842,6 @@ function renderPayout() {
 // ==================== РЕНДЕР: ЖУРНАЛ ====================
 function renderJournal() {
   if (!State.fullData) {
-    // Загружаем если нет
     apiCall('getFullData').then(data => {
       if (data.success) {
         State.fullData = {
@@ -885,7 +856,6 @@ function renderJournal() {
     return;
   }
 
-  // Заполняем фильтр салонов
   const salonFilter = document.getElementById('journal-salon-filter');
   if (salonFilter && salonFilter.options.length <= 1) {
     salonFilter.innerHTML = '<option value="all">Все салоны</option>' +
@@ -902,7 +872,6 @@ function renderJournalList() {
   const filter = State.journalFilter;
   let items = [];
 
-  // Транзакции
   if (filter.type === 'all' || filter.type === 'visit') {
     State.fullData.transactions.forEach(t => {
       if (filter.salon !== 'all' && t.salon_id !== filter.salon) return;
@@ -917,7 +886,6 @@ function renderJournalList() {
     });
   }
 
-  // Выплаты
   if (filter.type === 'all' || filter.type === 'payout') {
     State.fullData.payouts.forEach(p => {
       if (filter.salon !== 'all' && p.salon_id !== filter.salon) return;
@@ -932,10 +900,7 @@ function renderJournalList() {
     });
   }
 
-  // Сортировка по убыванию даты
   items.sort((a, b) => new Date(b.date) - new Date(a.date));
-
-  // Ограничиваем 100
   const limited = items.slice(0, 100);
 
   if (limited.length === 0) {
@@ -949,7 +914,6 @@ function renderJournalList() {
     return;
   }
 
-  // Группировка по дням
   const grouped = {};
   limited.forEach(item => {
     const key = formatDateFull(item.date);
@@ -988,94 +952,181 @@ function renderReports() {
       State.data.salons.map(s => `<option value="${s.salon_id}">${escapeHtml(s.name)}</option>`).join('');
   }
 
+  initMonthPicker();
+
+  const monthPicker = document.getElementById('reports-month-picker');
+  if (monthPicker) {
+    monthPicker.style.display = State.reportsFilter.period === 'month' ? 'block' : 'none';
+  }
+
   renderReportsContent();
+}
+
+function initMonthPicker() {
+  const select = document.getElementById('reports-month-select');
+  if (!select || select.options.length > 0) return;
+
+  const now = new Date();
+  const months = [];
+  
+  for (let i = 0; i < 24; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    months.push({
+      value: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+      label: d.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })
+    });
+  }
+
+  select.innerHTML = months.map(m => 
+    `<option value="${m.value}">${m.label.charAt(0).toUpperCase() + m.label.slice(1)}</option>`
+  ).join('');
+
+  const currentValue = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+  select.value = currentValue;
+  State.reportsFilter.month = currentValue;
+
+  select.addEventListener('change', e => {
+    State.reportsFilter.month = e.target.value;
+    renderReportsContent();
+  });
+}
+
+function getPeriodRange(period) {
+  const now = new Date();
+  let startDate, endDate, label;
+
+  if (period === 'today') {
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    endDate = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59);
+    label = now.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+
+  } else if (period === 'week') {
+    const day = now.getDay() || 7;
+    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate() - day + 1);
+    endDate = new Date(startDate);
+    endDate.setDate(startDate.getDate() + 6);
+    endDate.setHours(23, 59, 59);
+    
+    const formatShort = d => d.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+    label = `${formatShort(startDate)} — ${formatShort(endDate)}.${endDate.getFullYear()}`;
+
+  } else if (period === 'month') {
+    const monthValue = State.reportsFilter.month || 
+      `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const [year, month] = monthValue.split('-').map(Number);
+    
+    startDate = new Date(year, month - 1, 1);
+    endDate = new Date(year, month, 0, 23, 59, 59);
+    
+    label = startDate.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+    label = label.charAt(0).toUpperCase() + label.slice(1);
+
+  } else if (period === 'year') {
+    startDate = new Date(now.getFullYear(), 0, 1);
+    endDate = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
+    label = String(now.getFullYear());
+  }
+
+  return { startDate, endDate, label };
 }
 
 function renderReportsContent() {
   const filter = State.reportsFilter;
   const period = filter.period;
 
-  // Определяем диапазон
-  const now = new Date();
-  let startDate;
-  if (period === 'today') {
-    startDate = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  } else if (period === 'week') {
-    startDate = new Date(now);
-    startDate.setDate(now.getDate() - 7);
-  } else if (period === 'month') {
-    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
-  } else if (period === 'year') {
-    startDate = new Date(now.getFullYear(), 0, 1);
-  }
+  const range = getPeriodRange(period);
 
-  // Фильтруем
+  const labelEl = document.getElementById('reports-period-label');
+  if (labelEl) labelEl.textContent = range.label;
+
   const filterBySalon = (arr) => filter.salon === 'all' ? arr : arr.filter(x => x.salon_id === filter.salon);
-  const filterByDate = (arr) => arr.filter(x => new Date(x.service_date || x.date) >= startDate);
+  const filterByDate = (arr) => arr.filter(x => {
+    const d = new Date(x.service_date || x.date);
+    return d >= range.startDate && d <= range.endDate;
+  });
 
   const transactions = filterByDate(filterBySalon(State.fullData.transactions));
   const payouts = filterByDate(filterBySalon(State.fullData.payouts));
 
   const earned = transactions.reduce((sum, t) => sum + t.master_earnings, 0);
   const received = payouts.reduce((sum, p) => sum + p.amount, 0);
-  const remaining = earned - received;
 
-  // Сводка
   const summaryEl = document.getElementById('reports-summary');
   if (summaryEl) {
     summaryEl.innerHTML = `
       <div class="report-row">
-        <span class="report-label">Заработала</span>
+        <span class="report-label">Заработала за период</span>
         <span class="report-value success">${formatMoney(earned)}</span>
       </div>
       <div class="report-row">
-        <span class="report-label">Получила</span>
+        <span class="report-label">Получила за период</span>
         <span class="report-value primary">${formatMoney(received)}</span>
       </div>
       <div class="report-row">
-        <span class="report-label">Осталось</span>
-        <span class="report-value ${remaining > 0 ? 'danger' : 'success'}">${formatMoney(remaining)}</span>
+        <span class="report-label">Визитов</span>
+        <span class="report-value" style="font-size: 16px;">${transactions.length}</span>
       </div>
     `;
   }
 
-  // По салонам
-  const bySalonEl = document.getElementById('reports-by-salon');
-  if (bySalonEl) {
-    if (filter.salon !== 'all') {
-      bySalonEl.innerHTML = '';
+  const totalDebtEl = document.getElementById('reports-total-debt');
+  if (totalDebtEl) {
+    let totalDebt;
+    if (filter.salon === 'all') {
+      totalDebt = State.data.totalDebt;
     } else {
+      const salon = State.data.salons.find(s => s.salon_id === filter.salon);
+      totalDebt = salon ? salon.debt : 0;
+    }
+
+    totalDebtEl.innerHTML = `
+      <div style="display: flex; justify-content: space-between; align-items: center;">
+        <span style="font-size: 15px; font-weight: 600; color: #991b1b;">
+          Салон должен сейчас
+        </span>
+        <span class="report-value danger">${formatMoney(totalDebt)}</span>
+      </div>
+    `;
+  }
+
+  const bySalonEl = document.getElementById('reports-by-salon');
+  const bySalonTitle = document.getElementById('reports-by-salon-title');
+  
+  if (filter.salon === 'all') {
+    if (bySalonTitle) bySalonTitle.style.display = 'block';
+    if (bySalonEl) {
       bySalonEl.innerHTML = State.data.salons.map(salon => {
         const sT = transactions.filter(t => t.salon_id === salon.salon_id);
         const sP = payouts.filter(p => p.salon_id === salon.salon_id);
         const sEarned = sT.reduce((sum, t) => sum + t.master_earnings, 0);
         const sReceived = sP.reduce((sum, p) => sum + p.amount, 0);
-        const sRemaining = sEarned - sReceived;
 
-        if (sEarned === 0 && sReceived === 0) return '';
+        if (sEarned === 0 && sReceived === 0 && salon.debt === 0) return '';
 
         return `
           <div class="card">
             <div style="font-weight: 600; margin-bottom: 12px;">${escapeHtml(salon.name)}</div>
             <div class="total-row">
-              <span class="total-row-label">Заработала</span>
+              <span class="total-row-label">Заработала за период</span>
               <span class="total-row-value">${formatMoney(sEarned)}</span>
             </div>
             <div class="total-row">
-              <span class="total-row-label">Получила</span>
+              <span class="total-row-label">Получила за период</span>
               <span class="total-row-value">${formatMoney(sReceived)}</span>
             </div>
             <div class="total-row">
-              <span class="total-row-label">Остаток</span>
-              <span class="total-row-value ${sRemaining > 0 ? 'income' : ''}">${formatMoney(sRemaining)}</span>
+              <span class="total-row-label">Долг сейчас</span>
+              <span class="total-row-value" style="color: var(--danger);">${formatMoney(salon.debt)}</span>
             </div>
           </div>
         `;
       }).join('');
     }
+  } else {
+    if (bySalonTitle) bySalonTitle.style.display = 'none';
+    if (bySalonEl) bySalonEl.innerHTML = '';
   }
 
-  // Топ услуг
   const topEl = document.getElementById('reports-top-services');
   if (topEl) {
     const counts = {};
@@ -1085,7 +1136,7 @@ function renderReportsContent() {
     const sorted = Object.entries(counts).sort((a, b) => b[1] - a[1]).slice(0, 5);
 
     if (sorted.length === 0) {
-      topEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Нет данных</div>';
+      topEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Нет данных за период</div>';
     } else {
       topEl.innerHTML = sorted.map(([name, count]) => `
         <div class="report-row">
@@ -1154,10 +1205,8 @@ function renderSalonEdit() {
   if (percentEl) percentEl.value = salon.default_percent || 50;
   if (deleteBtn) deleteBtn.style.display = isNew || State.data.salons.length <= 1 ? 'none' : 'flex';
 
-  // Список услуг
   const servicesEl = document.getElementById('salon-services-list');
   if (servicesEl && !isNew) {
-    // Загружаем услуги для этого салона
     apiCall('getServices', { salon_id: salon.salon_id }).then(data => {
       if (data.success && data.services) {
         if (data.services.length === 0) {
@@ -1197,7 +1246,6 @@ function renderServicePicker(mode) {
   if (!listEl) return;
 
   if (mode === 'salon-edit') {
-    // В режиме редактирования салона — форма создания новой услуги
     listEl.innerHTML = `
       <div class="input-group">
         <label class="input-label">Название</label>
@@ -1216,7 +1264,6 @@ function renderServicePicker(mode) {
     return;
   }
 
-  // Обычный режим — выбор услуги
   const salonId = salon?.salon_id;
   if (!salonId) {
     listEl.innerHTML = '<div class="empty-state"><div class="empty-state-text">Салон не выбран</div></div>';
@@ -1305,7 +1352,6 @@ async function handleAuth() {
     State.data.totalDebt = result.totalDebt;
     State.data.recentOps = result.recentOps;
 
-    // Выбираем первый салон по умолчанию
     if (State.data.salons.length > 0) {
       State.currentSalonId = State.data.salons[0].salon_id;
       Storage.set(STORAGE_KEYS.SALON, State.currentSalonId);
@@ -1314,7 +1360,6 @@ async function handleAuth() {
     Storage.set(STORAGE_KEYS.DATA, State.data);
     Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
 
-    // Загружаем полные данные в фоне
     syncData(true);
 
     App.go('home');
@@ -1331,7 +1376,6 @@ async function handleAuth() {
 async function init() {
   lucide.createIcons();
 
-  // Загружаем токен
   const token = Storage.get(STORAGE_KEYS.TOKEN, '');
   if (!token) {
     App.go('auth');
@@ -1340,7 +1384,6 @@ async function init() {
 
   State.token = token;
 
-  // Загружаем кэшированные данные
   const cachedData = Storage.get(STORAGE_KEYS.DATA);
   const cachedFull = Storage.get(STORAGE_KEYS.DATA + '_full');
   const cachedSalon = Storage.get(STORAGE_KEYS.SALON, '');
@@ -1357,14 +1400,12 @@ async function init() {
     State.currentSalonId = State.data.salons[0].salon_id;
   }
 
-  // Сразу показываем главный экран если есть данные
   if (cachedData && cachedData.salons && cachedData.salons.length > 0) {
     App.go('home');
   } else {
     showScreen('loading');
   }
 
-  // В фоне — синхронизация
   setTimeout(async () => {
     await flushPending();
     const ok = await syncData();
@@ -1378,7 +1419,6 @@ async function init() {
 
 // ==================== EVENTS ====================
 document.addEventListener('DOMContentLoaded', () => {
-  // Кнопка авторизации
   const authBtn = document.getElementById('btn-auth');
   if (authBtn) authBtn.addEventListener('click', handleAuth);
 
@@ -1389,7 +1429,6 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Фильтры журнала
   const journalSalon = document.getElementById('journal-salon-filter');
   if (journalSalon) journalSalon.addEventListener('change', e => {
     State.journalFilter.salon = e.target.value;
@@ -1402,14 +1441,12 @@ document.addEventListener('DOMContentLoaded', () => {
     renderJournalList();
   });
 
-  // Фильтры отчётов
   const reportsSalon = document.getElementById('reports-salon-filter');
   if (reportsSalon) reportsSalon.addEventListener('change', e => {
     State.reportsFilter.salon = e.target.value;
     renderReportsContent();
   });
 
-  // Табы отчётов
   const reportsTabs = document.getElementById('reports-tabs');
   if (reportsTabs) {
     reportsTabs.querySelectorAll('.tab').forEach(tab => {
@@ -1417,35 +1454,35 @@ document.addEventListener('DOMContentLoaded', () => {
         reportsTabs.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
         tab.classList.add('active');
         State.reportsFilter.period = tab.dataset.period;
+        
+        const monthPicker = document.getElementById('reports-month-picker');
+        if (monthPicker) {
+          monthPicker.style.display = tab.dataset.period === 'month' ? 'block' : 'none';
+        }
+        
         renderReportsContent();
       });
     });
   }
 
-  // Кнопка сохранения визита
   const saveVisitBtn = document.getElementById('btn-save-visit');
   if (saveVisitBtn) saveVisitBtn.addEventListener('click', App.saveVisit);
 
-  // Кнопка сохранения выплаты
   const savePayoutBtn = document.getElementById('btn-save-payout');
   if (savePayoutBtn) savePayoutBtn.addEventListener('click', App.savePayout);
 
-  // Кнопка сохранения салона
   const saveSalonBtn = document.getElementById('btn-save-salon');
   if (saveSalonBtn) saveSalonBtn.addEventListener('click', App.saveSalon);
 
-  // Кнопка удаления салона
   const deleteSalonBtn = document.getElementById('btn-delete-salon');
   if (deleteSalonBtn) deleteSalonBtn.addEventListener('click', App.deleteSalon);
 
-  // Кнопка добавления салона
   const addSalonBtn = document.getElementById('btn-add-salon');
   if (addSalonBtn) addSalonBtn.addEventListener('click', () => {
     State.editingSalonId = null;
     App.go('salon-edit');
   });
 
-  // Назад из выбора услуги
   const servicePickerBack = document.getElementById('service-picker-back');
   if (servicePickerBack) {
     servicePickerBack.addEventListener('click', () => {
@@ -1453,17 +1490,14 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  // Онлайн/оффлайн события
   window.addEventListener('online', () => {
     flushPending();
     syncData(true);
   });
   window.addEventListener('offline', () => setNetwork('offline'));
 
-  // Запуск
   init();
 
-  // Регистрация service worker
   if ('serviceWorker' in navigator) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
