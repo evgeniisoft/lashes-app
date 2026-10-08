@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v3.2
-   Оптимизация + система алертов
+   LASHES APP — APP.JS v3.3
+   Фиксы: поиск, спиннеры, копирование услуг, кэш, редактирование
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -16,10 +16,11 @@ const STORAGE_KEYS = {
   LAST_FULL_SYNC: 'lash_last_full_sync'
 };
 
-const SYNC_INTERVAL = 5 * 60 * 1000;      // 5 минут
-const FULL_DATA_TTL = 5 * 60 * 1000;      // 5 минут
-const PENDING_BATCH_SIZE = 5;              // Максимум операций за раз
-const ALERT_CHECK_INTERVAL = 2 * 60 * 1000; // Проверка алертов раз в 2 минуты
+const SYNC_INTERVAL = 5 * 60 * 1000;
+const FULL_DATA_TTL = 5 * 60 * 1000;
+const SERVICES_CACHE_TTL = 5 * 60 * 1000;
+const PENDING_BATCH_SIZE = 5;
+const ALERT_CHECK_INTERVAL = 2 * 60 * 1000;
 
 // ==================== СОСТОЯНИЕ ====================
 const State = {
@@ -32,6 +33,7 @@ const State = {
   },
   fullData: null,
   fullDataLoadedAt: 0,
+  servicesCache: {},         // { salon_id: { services: [], loadedAt: timestamp } }
   pending: [],
   currentSalonId: '',
   currentScreen: 'loading',
@@ -130,6 +132,29 @@ const Storage = {
     try { localStorage.removeItem(key); } catch (e) {}
   }
 };
+
+// ==================== КЭШ УСЛУГ ====================
+function getCachedServices(salonId) {
+  const cached = State.servicesCache[salonId];
+  if (!cached) return null;
+  if (Date.now() - cached.loadedAt > SERVICES_CACHE_TTL) return null;
+  return cached.services;
+}
+
+function setCachedServices(salonId, services) {
+  State.servicesCache[salonId] = {
+    services: services,
+    loadedAt: Date.now()
+  };
+}
+
+function clearServicesCache(salonId) {
+  if (salonId) {
+    delete State.servicesCache[salonId];
+  } else {
+    State.servicesCache = {};
+  }
+}
 
 // ==================== СИСТЕМА АЛЕРТОВ ====================
 const Alerts = {
@@ -322,6 +347,7 @@ UserAgent: ${navigator.userAgent}
     Alerts.remove('syncing');
     Alerts.add('syncing', 'info', 'Синхронизация', 'Попытка синхронизации...');
     
+    clearServicesCache(); // Сбросить кэш услуг
     await flushPending();
     const ok = await syncData(true);
     const fullOk = await syncFullData(true);
@@ -341,7 +367,6 @@ UserAgent: ${navigator.userAgent}
     const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
     const pending = Storage.get(STORAGE_KEYS.PENDING, []);
     
-    // 1. Нет интернета
     if (!navigator.onLine) {
       this.add('offline', 'warning', 
         'Нет интернета', 
@@ -351,7 +376,6 @@ UserAgent: ${navigator.userAgent}
       this.remove('offline');
     }
     
-    // 2. Много pending
     if (pending.length > 5) {
       this.add('pending', 'warning',
         `Не отправлено: ${pending.length}`,
@@ -367,7 +391,6 @@ UserAgent: ${navigator.userAgent}
       this.remove('pending');
     }
     
-    // 3. Данные устарели
     if (lastSync > 0) {
       const hoursSinceSync = (now - lastSync) / 3600000;
       if (hoursSinceSync > 24) {
@@ -386,7 +409,6 @@ UserAgent: ${navigator.userAgent}
       }
     }
     
-    // 4. Долго офлайн
     if (State.network === 'offline' && State.lastOnlineAt) {
       const offlineMinutes = (now - State.lastOnlineAt) / 60000;
       if (offlineMinutes > 5) {
@@ -474,6 +496,19 @@ async function apiCall(action, params = {}, options = {}) {
   }
 }
 
+// ==================== ЗАГРУЗКА УСЛУГ ====================
+async function fetchServices(salonId, force = false) {
+  if (!force) {
+    const cached = getCachedServices(salonId);
+    if (cached) return cached;
+  }
+  
+  const data = await apiCall('getServices', { salon_id: salonId });
+  const services = data.success ? (data.services || []) : [];
+  setCachedServices(salonId, services);
+  return services;
+}
+
 // ==================== СЕТЬ ====================
 function setNetwork(status) {
   State.network = status;
@@ -512,7 +547,6 @@ function setNetwork(status) {
   
   txt.textContent = text;
   
-  // Помечаем устаревшие данные
   if (status === 'online' && minutesSinceSync > 24 * 60) {
     el.classList.add('old');
   } else if (status === 'online' && minutesSinceSync > 60) {
@@ -588,7 +622,6 @@ async function flushPending() {
     return 0;
   }
   
-  // Батч: не больше N операций за раз
   const batch = pending.slice(0, PENDING_BATCH_SIZE);
   const rest = pending.slice(PENDING_BATCH_SIZE);
 
@@ -780,7 +813,7 @@ const App = {
     const optimistic = {
       id: clientId,
       type: 'visit',
-      date: new Date().toISOString(),
+      date: serviceDate,
       service_date: serviceDate,
       title: servicesSnapshot[0].service_name,
       amount: totalEarnings,
@@ -1003,6 +1036,7 @@ const App = {
 
   async forceRefresh() {
     closeModal();
+    clearServicesCache(); // Сброс кэша услуг
     await flushPending();
     await syncData();
     await syncFullData(true);
@@ -1033,6 +1067,7 @@ const App = {
     };
     State.fullData = null;
     State.currentSalonId = '';
+    State.servicesCache = {};
     Alerts.clear();
     App.go('auth');
   },
@@ -1058,14 +1093,20 @@ const App = {
           salon_action: 'update',
           payload: { salon_id: State.editingSalonId, name, default_percent: percent }
         });
+        toast('Сохранено', 'success');
       } else {
-        await apiCall('manageSalon', {
+        const result = await apiCall('manageSalon', {
           salon_action: 'create',
           payload: { name, default_percent: percent }
         });
+        toast('Салон создан', 'success');
+        
+        // Сохраняем ID нового салона для возможного копирования услуг
+        State._newSalonId = result.salon_id;
       }
+      
+      clearServicesCache(); // Сброс кэша — вдруг что-то поменялось
       await syncData();
-      toast('Сохранено', 'success');
       App.go('salons');
     } catch (e) {
       toast('Ошибка: ' + e.message, 'error');
@@ -1077,15 +1118,20 @@ const App = {
 
   async deleteSalon() {
     if (!State.editingSalonId) return;
-    if (!confirm('Удалить салон? Данные останутся, но скроются из интерфейса.')) return;
+    
+    const salon = State.data.salons.find(s => s.salon_id === State.editingSalonId);
+    const salonName = salon ? salon.name : '';
+    
+    if (!confirm(`Удалить салон "${salonName}"?\n\nВизиты и выплаты этого салона ОСТАНУТСЯ в таблице, но будут скрыты из интерфейса. Отменить это действие нельзя.`)) return;
 
     try {
       await apiCall('manageSalon', {
         salon_action: 'delete',
         payload: { salon_id: State.editingSalonId }
       });
+      clearServicesCache(State.editingSalonId);
       await syncData();
-      toast('Удалено', 'success');
+      toast('Салон удалён', 'success');
       App.go('salons');
     } catch (e) {
       toast('Ошибка: ' + e.message, 'error');
@@ -1094,6 +1140,7 @@ const App = {
 
   editSalon(salonId) {
     State.editingSalonId = salonId;
+    State._newSalonId = null;
     App.go('salon-edit');
   },
 
@@ -1122,16 +1169,21 @@ const App = {
   },
 
   async saveSalonService(service) {
+    if (!service.name || !service.name.trim()) {
+      toast('Введите название услуги', 'error');
+      return;
+    }
+    
     try {
       await apiCall('manageService', {
         service_action: 'create',
         payload: {
           salon_id: State.editingSalonId,
-          service_name: service.name,
-          base_price: service.price
+          service_name: service.name.trim(),
+          base_price: service.price || 0
         }
       });
-      await syncData();
+      clearServicesCache(State.editingSalonId);
       toast('Услуга добавлена', 'success');
       App.go('salon-edit');
     } catch (e) {
@@ -1139,7 +1191,150 @@ const App = {
     }
   },
 
-  // ==================== РЕДАКТИРОВАНИЕ ====================
+  // ==================== КОПИРОВАНИЕ УСЛУГ ====================
+  showCopyServicesModal() {
+    const currentSalonId = State.editingSalonId;
+    const otherSalons = State.data.salons.filter(s => s.salon_id !== currentSalonId);
+    
+    if (otherSalons.length === 0) {
+      toast('Нет других салонов для копирования', 'error');
+      return;
+    }
+    
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Скопировать услуги из</div>
+      <p class="text-small text-muted mb-16">Выберите салон-источник. Услуги скопируются с новыми ID — оригиналы не изменятся.</p>
+      ${otherSalons.map(s => `
+        <div class="settings-row" onclick="App.copyServicesFrom('${s.salon_id}')">
+          <div class="settings-icon"><i data-lucide="building-2"></i></div>
+          <div class="settings-content">
+            <div class="settings-title">${escapeHtml(s.name)}</div>
+            <div class="settings-subtitle">Процент: ${s.default_percent}%</div>
+          </div>
+          <i data-lucide="chevron-right" class="settings-chevron"></i>
+        </div>
+      `).join('')}
+    `);
+  },
+  
+  async copyServicesFrom(sourceSalonId) {
+    closeModal();
+    
+    const salon = State.data.salons.find(s => s.salon_id === sourceSalonId);
+    const sourceName = salon ? salon.name : '';
+    
+    if (!confirm(`Скопировать все услуги из "${sourceName}" в текущий салон?\n\nЕсли в текущем салоне уже есть услуги — копирование не сработает.`)) return;
+    
+    showLoadingModal('Копирование...');
+    
+    try {
+      const result = await apiCall('manageService', {
+        service_action: 'copy_from_salon',
+        payload: {
+          from_salon_id: sourceSalonId,
+          to_salon_id: State.editingSalonId
+        }
+      });
+      
+      clearServicesCache(State.editingSalonId);
+      closeModal();
+      toast(`Скопировано услуг: ${result.count || 0}`, 'success');
+      App.go('salon-edit');
+    } catch (e) {
+      closeModal();
+      toast('Ошибка: ' + e.message, 'error');
+    }
+  },
+
+  // ==================== РЕДАКТИРОВАНИЕ УСЛУГ В САЛОНЕ ====================
+  editSalonService(serviceId) {
+    const salonId = State.editingSalonId;
+    const cached = getCachedServices(salonId) || [];
+    const service = cached.find(s => s.service_id === serviceId);
+    
+    if (!service) {
+      toast('Услуга не найдена', 'error');
+      return;
+    }
+    
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Редактировать услугу</div>
+      
+      <div class="input-group">
+        <label class="input-label">Название</label>
+        <input type="text" id="edit-salon-service-name" class="input" value="${escapeHtml(service.service_name)}">
+      </div>
+      
+      <div class="input-group">
+        <label class="input-label">Цена (₽)</label>
+        <input type="number" id="edit-salon-service-price" class="input" value="${service.base_price}">
+      </div>
+      
+      <button class="btn btn-primary" onclick="App.saveSalonServiceEdit('${serviceId}')">
+        <i data-lucide="check"></i>
+        <span>Сохранить</span>
+      </button>
+      
+      <button class="btn btn-danger" onclick="App.confirmDeleteSalonService('${serviceId}')">
+        <i data-lucide="trash-2"></i>
+        <span>Удалить услугу</span>
+      </button>
+    `);
+  },
+  
+  async saveSalonServiceEdit(serviceId) {
+    const name = document.getElementById('edit-salon-service-name').value.trim();
+    const price = parseFloat(document.getElementById('edit-salon-service-price').value) || 0;
+    
+    if (!name) {
+      toast('Введите название', 'error');
+      return;
+    }
+    
+    showLoadingModal('Сохранение...');
+    
+    try {
+      await apiCall('manageService', {
+        service_action: 'update',
+        payload: {
+          service_id: serviceId,
+          service_name: name,
+          base_price: price
+        }
+      });
+      
+      clearServicesCache(State.editingSalonId);
+      closeModal();
+      toast('Сохранено', 'success');
+      App.go('salon-edit');
+    } catch (e) {
+      closeModal();
+      toast('Ошибка: ' + e.message, 'error');
+    }
+  },
+  
+  confirmDeleteSalonService(serviceId) {
+    if (!confirm('Удалить услугу из каталога?\n\nВ уже сохранённых визитах она останется.')) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('manageService', {
+      service_action: 'delete',
+      payload: { service_id: serviceId }
+    }).then(() => {
+      clearServicesCache(State.editingSalonId);
+      closeModal();
+      toast('Услуга удалена', 'success');
+      App.go('salon-edit');
+    }).catch(e => {
+      closeModal();
+      toast('Ошибка: ' + e.message, 'error');
+    });
+  },
+
+  // ==================== РЕДАКТИРОВАНИЕ ВИЗИТОВ ====================
   
   showVisitDetails(visitId) {
     if (!State.fullData) {
@@ -1206,8 +1401,10 @@ const App = {
     
     const salonId = transaction.salon_id;
     
-    apiCall('getServices', { salon_id: salonId }).then(data => {
-      const services = data.success ? data.services : [];
+    fetchServices(salonId).then(services => {
+      const now = new Date();
+      const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+      const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
       
       showModal(`
         <div class="modal-handle"></div>
@@ -1222,6 +1419,9 @@ const App = {
                 ${escapeHtml(s.service_name)}
               </option>
             `).join('')}
+            ${!services.find(s => s.service_name === transaction.service_name) ? `
+              <option value="${escapeHtml(transaction.service_name)}" selected>${escapeHtml(transaction.service_name)} (старая)</option>
+            ` : ''}
           </select>
         </div>
         
@@ -1242,7 +1442,10 @@ const App = {
         
         <div class="input-group">
           <label class="input-label">Дата и время</label>
-          <input type="datetime-local" id="edit-tx-date" class="input" value="${formatDateTimeLocal(transaction.service_date)}">
+          <input type="datetime-local" id="edit-tx-date" class="input" 
+                 value="${formatDateTimeLocal(transaction.service_date)}"
+                 min="${formatDateTimeLocal(oneYearAgo)}"
+                 max="${formatDateTimeLocal(oneMonthAhead)}">
         </div>
         
         <button class="btn btn-primary" onclick="App.saveTransactionEdit('${transactionId}')">
@@ -1282,7 +1485,31 @@ const App = {
       return;
     }
     
-    const serviceDate = dateInput ? new Date(dateInput).toISOString() : undefined;
+    // Валидация даты
+    if (!dateInput) {
+      toast('Введите дату', 'error');
+      return;
+    }
+    
+    const parsedDate = new Date(dateInput);
+    const now = new Date();
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
+    if (isNaN(parsedDate.getTime())) {
+      toast('Некорректная дата', 'error');
+      return;
+    }
+    if (parsedDate < oneYearAgo) {
+      toast('Дата слишком давняя', 'error');
+      return;
+    }
+    if (parsedDate > oneMonthAhead) {
+      toast('Дата слишком далеко в будущем', 'error');
+      return;
+    }
+    
+    const serviceDate = parsedDate.toISOString();
     
     showLoadingModal('Сохранение...');
     
@@ -1309,7 +1536,7 @@ const App = {
         tx.final_price = fullPrice - tx.discount_amount;
         tx.master_percent = masterPercent;
         tx.master_earnings = tx.final_price * (masterPercent / 100);
-        if (serviceDate) tx.service_date = serviceDate;
+        tx.service_date = serviceDate;
       }
       
       Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
@@ -1387,6 +1614,10 @@ const App = {
       return;
     }
     
+    const now = new Date();
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
     showModal(`
       <div class="modal-handle"></div>
       <div class="modal-title">Редактировать выплату</div>
@@ -1403,7 +1634,10 @@ const App = {
       
       <div class="input-group">
         <label class="input-label">Дата</label>
-        <input type="datetime-local" id="edit-payout-date" class="input" value="${formatDateTimeLocal(payout.date)}">
+        <input type="datetime-local" id="edit-payout-date" class="input" 
+               value="${formatDateTimeLocal(payout.date)}"
+               min="${formatDateTimeLocal(oneYearAgo)}"
+               max="${formatDateTimeLocal(oneMonthAhead)}">
       </div>
       
       <button class="btn btn-primary" onclick="App.savePayoutEdit('${payoutId}')">
@@ -1428,7 +1662,30 @@ const App = {
       return;
     }
     
-    const date = dateInput ? new Date(dateInput).toISOString() : undefined;
+    if (!dateInput) {
+      toast('Введите дату', 'error');
+      return;
+    }
+    
+    const parsedDate = new Date(dateInput);
+    const now = new Date();
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
+    if (isNaN(parsedDate.getTime())) {
+      toast('Некорректная дата', 'error');
+      return;
+    }
+    if (parsedDate < oneYearAgo) {
+      toast('Дата слишком давняя', 'error');
+      return;
+    }
+    if (parsedDate > oneMonthAhead) {
+      toast('Дата слишком далеко в будущем', 'error');
+      return;
+    }
+    
+    const date = parsedDate.toISOString();
     
     showLoadingModal('Сохранение...');
     
@@ -1444,7 +1701,7 @@ const App = {
       if (p) {
         p.amount = amount;
         p.comment = comment;
-        if (date) p.date = date;
+        p.date = date;
       }
       
       Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
@@ -1601,7 +1858,13 @@ function renderAddVisit() {
 
   const dateInput = document.getElementById('visit-date');
   if (dateInput && !dateInput.value) {
+    const now = new Date();
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
     dateInput.value = formatDateTimeLocal();
+    dateInput.min = formatDateTimeLocal(oneYearAgo);
+    dateInput.max = formatDateTimeLocal(oneMonthAhead);
   }
 
   renderVisitServices();
@@ -2108,24 +2371,55 @@ function renderSalonEdit() {
 
   const servicesEl = document.getElementById('salon-services-list');
   if (servicesEl && !isNew) {
-    apiCall('getServices', { salon_id: salon.salon_id }).then(data => {
-      if (data.success && data.services) {
-        if (data.services.length === 0) {
-          servicesEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Нет услуг. Добавьте первую.</div>';
-        } else {
-          servicesEl.innerHTML = data.services.map(s => `
-            <div class="service-item">
-              <div class="service-item-main">
-                <div class="service-name">${escapeHtml(s.service_name)}</div>
-              </div>
-              <div class="service-price">${formatMoney(s.base_price)}</div>
+    // Показываем спиннер сразу
+    servicesEl.innerHTML = `
+      <div class="empty-state">
+        <div class="spinner-large" style="margin: 0 auto;"></div>
+      </div>
+    `;
+    
+    fetchServices(salon.salon_id).then(services => {
+      if (services && services.length > 0) {
+        servicesEl.innerHTML = services.map(s => `
+          <div class="service-item clickable" onclick="App.editSalonService('${s.service_id}')">
+            <div class="service-item-main">
+              <div class="service-name">${escapeHtml(s.service_name)}</div>
             </div>
-          `).join('');
-        }
+            <div class="service-price">${formatMoney(s.base_price)}</div>
+            <i data-lucide="pencil" style="width: 16px; height: 16px; margin-left: 8px; color: var(--text-3);"></i>
+          </div>
+        `).join('');
+      } else {
+        servicesEl.innerHTML = `
+          <div class="empty-state" style="padding: 20px;">
+            <div class="empty-state-text">Нет услуг. Добавьте первую.</div>
+          </div>
+        `;
       }
-    }).catch(() => {});
+      lucide.createIcons();
+    }).catch(e => {
+      console.error('Load services error:', e);
+      servicesEl.innerHTML = `
+        <div class="empty-state">
+          <i data-lucide="alert-circle"></i>
+          <div class="empty-state-text">Не удалось загрузить услуги</div>
+          <button class="btn btn-secondary mt-16" onclick="renderSalonEdit()">
+            <i data-lucide="refresh-cw"></i>
+            <span>Повторить</span>
+          </button>
+        </div>
+      `;
+      lucide.createIcons();
+    });
   } else if (servicesEl) {
     servicesEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Сохраните салон, потом добавьте услуги</div>';
+  }
+  
+  // Кнопка "Скопировать услуги из другого салона" — показываем, если есть другие салоны
+  const copyBtn = document.getElementById('btn-copy-services');
+  if (copyBtn) {
+    const otherSalons = State.data.salons.filter(s => s.salon_id !== State.editingSalonId);
+    copyBtn.style.display = (!isNew && otherSalons.length > 0) ? 'flex' : 'none';
   }
 
   lucide.createIcons();
@@ -2142,6 +2436,28 @@ function renderServicePicker(mode) {
 
   const listEl = document.getElementById('service-picker-list');
   if (!listEl) return;
+  
+  // Поиск — показываем только в режиме visit
+  const searchInput = document.getElementById('service-search');
+  if (searchInput) {
+    searchInput.style.display = mode === 'salon-edit' ? 'none' : 'block';
+    searchInput.value = '';
+    
+    // Убираем старый обработчик (клонированием)
+    const newSearchInput = searchInput.cloneNode(true);
+    searchInput.parentNode.replaceChild(newSearchInput, searchInput);
+    
+    if (mode === 'visit') {
+      newSearchInput.addEventListener('input', e => {
+        const query = e.target.value.toLowerCase().trim();
+        const items = document.querySelectorAll('#service-picker-list .service-item');
+        items.forEach(item => {
+          const name = item.querySelector('.service-name')?.textContent.toLowerCase() || '';
+          item.style.display = name.includes(query) ? 'flex' : 'none';
+        });
+      });
+    }
+  }
 
   if (mode === 'visit' && (!State.data.salons || State.data.salons.length === 0)) {
     listEl.innerHTML = `
@@ -2215,34 +2531,22 @@ function renderServicePicker(mode) {
     return;
   }
 
+  // Показываем кэш сразу
+  const cachedServices = getCachedServices(salonId);
+  if (cachedServices) {
+    renderServicePickerList(cachedServices);
+    return;
+  }
+  
+  // Загружаем
   listEl.innerHTML = `
     <div class="empty-state">
       <div class="spinner-large" style="margin: 0 auto 16px;"></div>
     </div>
   `;
 
-  apiCall('getServices', { salon_id: salonId }).then(data => {
-    if (!data.success || !data.services || data.services.length === 0) {
-      listEl.innerHTML = `
-        <div class="empty-state">
-          <i data-lucide="inbox"></i>
-          <div class="empty-state-text">Нет услуг</div>
-          <p class="text-small text-muted mt-16">Добавьте услуги в настройках салона</p>
-        </div>
-      `;
-      lucide.createIcons();
-      return;
-    }
-
-    listEl.innerHTML = data.services.map(s => `
-      <div class="service-item clickable" onclick="App.addServiceToVisit({ service_id: '${s.service_id}', service_name: ${JSON.stringify(s.service_name)}, base_price: ${s.base_price} })">
-        <div class="service-item-main">
-          <div class="service-name">${escapeHtml(s.service_name)}</div>
-        </div>
-        <div class="service-price">${formatMoney(s.base_price)}</div>
-      </div>
-    `).join('');
-    lucide.createIcons();
+  fetchServices(salonId).then(services => {
+    renderServicePickerList(services);
   }).catch(e => {
     listEl.innerHTML = `
       <div class="empty-state">
@@ -2256,6 +2560,33 @@ function renderServicePicker(mode) {
     `;
     lucide.createIcons();
   });
+}
+
+function renderServicePickerList(services) {
+  const listEl = document.getElementById('service-picker-list');
+  if (!listEl) return;
+  
+  if (!services || services.length === 0) {
+    listEl.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="inbox"></i>
+        <div class="empty-state-text">Нет услуг</div>
+        <p class="text-small text-muted mt-16">Добавьте услуги в настройках салона</p>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+  
+  listEl.innerHTML = services.map(s => `
+    <div class="service-item clickable" onclick="App.addServiceToVisit({ service_id: '${s.service_id}', service_name: ${JSON.stringify(s.service_name)}, base_price: ${s.base_price} })">
+      <div class="service-item-main">
+        <div class="service-name">${escapeHtml(s.service_name)}</div>
+      </div>
+      <div class="service-price">${formatMoney(s.base_price)}</div>
+    </div>
+  `).join('');
+  lucide.createIcons();
 }
 
 // ==================== МОДАЛКА ====================
@@ -2341,6 +2672,20 @@ async function handleAuth() {
   }
 }
 
+// ==================== СИНХРОНИЗАЦИЯ recentOps С pending ====================
+function syncRecentOpsWithPending() {
+  const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+  const pendingIds = pending.map(p => p.id);
+  
+  State.data.recentOps = State.data.recentOps.map(op => {
+    if (op.status === 'pending' && !pendingIds.includes(op.id)) {
+      // Операция больше не в pending — значит успешно отправлена
+      return { ...op, status: 'saved' };
+    }
+    return op;
+  });
+}
+
 // ==================== ИНИЦИАЛИЗАЦИЯ ====================
 async function init() {
   lucide.createIcons();
@@ -2359,6 +2704,8 @@ async function init() {
 
   if (cachedData) {
     State.data = cachedData;
+    // Синхронизируем статусы с pending
+    syncRecentOpsWithPending();
   }
   if (cachedFull) {
     State.fullData = cachedFull;
@@ -2470,6 +2817,14 @@ document.addEventListener('DOMContentLoaded', () => {
     State.editingSalonId = null;
     App.go('salon-edit');
   });
+  
+  // Кнопка "Скопировать услуги"
+  const copyServicesBtn = document.getElementById('btn-copy-services');
+  if (copyServicesBtn) {
+    copyServicesBtn.addEventListener('click', () => {
+      App.showCopyServicesModal();
+    });
+  }
 
   const servicePickerBack = document.getElementById('service-picker-back');
   if (servicePickerBack) {
