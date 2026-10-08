@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v3.4
-   Фиксы: поиск, спиннеры, копирование, кэш, гонки запросов
+   LASHES APP — APP.JS v3.5
+   Фикс: тап на услугу, кэш услуг, mergeRecentOps
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -43,6 +43,8 @@ const State = {
   draftVisit: { services: [] },
   editingSalonId: null,
   _renderSalonToken: 0,
+  _servicePickerList: [],
+  _editingSalonServices: [],
   journalFilter: { salon: 'all', type: 'all' },
   reportsFilter: { salon: 'all', period: 'month', month: '' }
 };
@@ -569,26 +571,39 @@ function syncRecentOpsWithPending() {
   });
 }
 
-// Мерджим серверные recentOps с локальными pending — чтобы не потерять
+// Мерджим серверные recentOps с локальными pending
 function mergeRecentOps(serverOps) {
-  const localPending = (State.data.recentOps || []).filter(op => op.status === 'pending');
+  const localOps = State.data.recentOps || [];
+  const localPending = localOps.filter(op => op.status === 'pending');
   
+  // Если нет локальных pending — берём серверные
   if (localPending.length === 0) {
-    return serverOps;
+    return (serverOps || []).slice(0, 20);
   }
   
-  // Убираем с сервера те, что уже есть в pending
-  const pendingIds = localPending.map(p => p.id);
-  const serverFiltered = (serverOps || []).filter(op => !pendingIds.includes(op.id));
+  // Строим карту серверных по id
+  const serverMap = {};
+  (serverOps || []).forEach(op => { serverMap[op.id] = op; });
   
-  // Сливаем: pending сверху, потом серверные
-  const merged = [...localPending, ...serverFiltered];
+  const result = [];
+  const usedIds = new Set();
   
-  // Сортируем по дате
-  merged.sort((a, b) => new Date(b.date || b.service_date) - new Date(a.date || a.service_date));
+  // 1. Все серверные — берём как есть
+  (serverOps || []).forEach(op => {
+    result.push(op);
+    usedIds.add(op.id);
+  });
   
-  // Ограничиваем 20
-  return merged.slice(0, 20);
+  // 2. Локальные pending, которых нет на сервере — добавляем
+  localPending.forEach(op => {
+    if (!usedIds.has(op.id)) {
+      result.push(op);
+    }
+  });
+  
+  // Сортируем и ограничиваем
+  result.sort((a, b) => new Date(b.date || b.service_date) - new Date(a.date || a.service_date));
+  return result.slice(0, 20);
 }
 
 async function syncData(silent = false) {
@@ -605,7 +620,6 @@ async function syncData(silent = false) {
       State.data.master = quick.master;
       State.data.salons = quick.salons;
       State.data.totalDebt = quick.totalDebt;
-      // Мерджим recentOps с локальными pending
       State.data.recentOps = mergeRecentOps(quick.recentOps);
 
       Storage.set(STORAGE_KEYS.DATA, State.data);
@@ -695,7 +709,6 @@ async function flushPending() {
     renderHome();
   }
 
-  // Если что-то отправилось — подтянем полные данные
   if (sent > 0) {
     syncFullData(true).then(() => {
       if (State.currentScreen === 'journal') renderJournalList();
@@ -780,6 +793,22 @@ const App = {
 
     renderServicePicker('visit');
     showScreen('service-picker');
+  },
+
+  pickService(serviceId) {
+    const list = State._servicePickerList || [];
+    const service = list.find(s => s.service_id === serviceId);
+    
+    if (!service) {
+      toast('Услуга не найдена', 'error');
+      return;
+    }
+    
+    App.addServiceToVisit({
+      service_id: service.service_id,
+      service_name: service.service_name,
+      base_price: service.base_price
+    });
   },
 
   addServiceToVisit(service) {
@@ -1115,6 +1144,8 @@ const App = {
     State.currentSalonId = '';
     State.servicesCache = {};
     State.editingSalonId = null;
+    State._servicePickerList = [];
+    State._editingSalonServices = [];
     Alerts.clear();
     App.go('auth');
   },
@@ -1149,7 +1180,6 @@ const App = {
         toast('Салон создан', 'success');
       }
       
-      // Сброс кнопки перед уходом
       btn.disabled = false;
       btn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
       
@@ -1296,9 +1326,8 @@ const App = {
 
   // ==================== РЕДАКТИРОВАНИЕ УСЛУГ В САЛОНЕ ====================
   editSalonService(serviceId) {
-    const salonId = State.editingSalonId;
-    const cached = getCachedServices(salonId) || [];
-    const service = cached.find(s => s.service_id === serviceId);
+    const list = State._editingSalonServices || [];
+    const service = list.find(s => s.service_id === serviceId);
     
     if (!service) {
       toast('Услуга не найдена. Обновите список.', 'error');
@@ -1452,6 +1481,8 @@ const App = {
       const now = new Date();
       const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
       const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+      
+      State._editingServices = services;
       
       showModal(`
         <div class="modal-handle"></div>
@@ -1809,7 +1840,6 @@ function showScreen(name) {
     servicePickerWaitInterval = null;
   }
   
-  // Сброс кнопки "Сохранить" при уходе с salon-edit
   if (name !== 'salon-edit') {
     const saveBtn = document.getElementById('btn-save-salon');
     if (saveBtn) {
@@ -2431,7 +2461,6 @@ function renderSalonEdit() {
   const deleteBtn = document.getElementById('btn-delete-salon');
   const saveBtn = document.getElementById('btn-save-salon');
 
-  // СБРОС КНОПКИ "СОХРАНИТЬ"
   if (saveBtn) {
     saveBtn.disabled = false;
     saveBtn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
@@ -2442,7 +2471,6 @@ function renderSalonEdit() {
   if (percentEl) percentEl.value = salon.default_percent || 50;
   if (deleteBtn) deleteBtn.style.display = isNew || State.data.salons.length <= 1 ? 'none' : 'flex';
 
-  // Гонки запросов — токен рендера
   State._renderSalonToken++;
   const currentToken = State._renderSalonToken;
 
@@ -2455,9 +2483,11 @@ function renderSalonEdit() {
     `;
     
     fetchServices(salon.salon_id).then(services => {
-      // Если за это время открыли другой салон — игнорируем
       if (State._renderSalonToken !== currentToken) return;
       if (State.editingSalonId !== salon.salon_id) return;
+      
+      // Сохраняем для редактирования
+      State._editingSalonServices = services;
       
       if (services && services.length > 0) {
         servicesEl.innerHTML = services.map(s => `
@@ -2498,7 +2528,6 @@ function renderSalonEdit() {
     servicesEl.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Сохраните салон, потом добавьте услуги</div>';
   }
   
-  // Кнопка "Скопировать услуги"
   const copyBtn = document.getElementById('btn-copy-services');
   if (copyBtn) {
     const otherSalons = State.data.salons.filter(s => s.salon_id !== State.editingSalonId);
@@ -2520,13 +2549,11 @@ function renderServicePicker(mode) {
   const listEl = document.getElementById('service-picker-list');
   if (!listEl) return;
   
-  // Поиск — показываем только в режиме visit
   const searchInput = document.getElementById('service-search');
   if (searchInput) {
     searchInput.style.display = mode === 'salon-edit' ? 'none' : 'block';
     searchInput.value = '';
     
-    // Убираем старый обработчик (клонированием)
     const newSearchInput = searchInput.cloneNode(true);
     searchInput.parentNode.replaceChild(newSearchInput, searchInput);
     
@@ -2659,8 +2686,11 @@ function renderServicePickerList(services) {
     return;
   }
   
+  // Сохраняем список для доступа по id
+  State._servicePickerList = services;
+  
   listEl.innerHTML = services.map(s => `
-    <div class="service-item clickable" onclick="App.addServiceToVisit({ service_id: '${s.service_id}', service_name: ${JSON.stringify(s.service_name)}, base_price: ${s.base_price} })">
+    <div class="service-item clickable" onclick="App.pickService('${s.service_id}')">
       <div class="service-item-main">
         <div class="service-name">${escapeHtml(s.service_name)}</div>
       </div>
