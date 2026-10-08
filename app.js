@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v2.1
-   Мгновенная загрузка, оффлайн, салоны, исправленные отчёты
+   LASHES APP — APP.JS v2.2
+   Мгновенная загрузка, оффлайн, салоны, редактирование
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -642,6 +642,339 @@ const App = {
     }
   },
 
+  // ==================== РЕДАКТИРОВАНИЕ ВИЗИТОВ ====================
+  
+  showVisitDetails(visitId) {
+    const services = State.fullData.transactions.filter(t => t.visit_id === visitId);
+    if (services.length === 0) {
+      toast('Визит не найден', 'error');
+      return;
+    }
+    
+    const first = services[0];
+    const totalPrice = services.reduce((sum, s) => sum + (s.final_price || s.full_price || 0), 0);
+    const totalEarnings = services.reduce((sum, s) => sum + s.master_earnings, 0);
+    const dateStr = formatDateFull(first.service_date) + ', ' + formatTime(first.service_date);
+    
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Визит</div>
+      <div class="text-small text-muted mb-16">${dateStr}</div>
+      
+      <div class="section-title" style="margin: 0 0 8px;">Услуги</div>
+      ${services.map(s => `
+        <div class="service-item clickable" onclick="App.editTransaction('${s.id}')">
+          <div class="service-item-main">
+            <div class="service-name">${escapeHtml(s.service_name)}</div>
+            <div class="service-meta">
+              ${formatMoney(s.final_price || s.full_price || 0)} · ${s.discount_percent > 0 ? 'скидка ' + s.discount_percent + '% · ' : ''}${s.master_percent}%
+            </div>
+          </div>
+          <div class="service-price">${formatMoney(s.master_earnings)}</div>
+          <i data-lucide="pencil" style="width: 16px; height: 16px; margin-left: 8px; color: var(--text-3);"></i>
+        </div>
+      `).join('')}
+      
+      <div class="total-block" style="margin-top: 12px;">
+        <div class="total-row">
+          <span class="total-row-label">Стоимость визита</span>
+          <span class="total-row-value">${formatMoney(totalPrice)}</span>
+        </div>
+        <div class="total-row">
+          <span class="total-row-label">Заработок мастера</span>
+          <span class="total-row-value income">${formatMoney(totalEarnings)}</span>
+        </div>
+      </div>
+      
+      <button class="btn btn-danger" onclick="App.confirmDeleteVisit('${visitId}')">
+        <i data-lucide="trash-2"></i>
+        <span>Удалить весь визит</span>
+      </button>
+    `);
+  },
+  
+  editTransaction(transactionId) {
+    const transaction = State.fullData.transactions.find(t => t.id === transactionId);
+    if (!transaction) {
+      toast('Услуга не найдена', 'error');
+      return;
+    }
+    
+    const salonId = transaction.salon_id;
+    
+    apiCall('getServices', { salon_id: salonId }).then(data => {
+      const services = data.success ? data.services : [];
+      
+      showModal(`
+        <div class="modal-handle"></div>
+        <div class="modal-title">Редактировать услугу</div>
+        
+        <div class="input-group">
+          <label class="input-label">Услуга</label>
+          <select id="edit-tx-service" class="select">
+            <option value="">— выберите —</option>
+            ${services.map(s => `
+              <option value="${escapeHtml(s.service_name)}" ${s.service_name === transaction.service_name ? 'selected' : ''}>
+                ${escapeHtml(s.service_name)}
+              </option>
+            `).join('')}
+          </select>
+        </div>
+        
+        <div class="input-group">
+          <label class="input-label">Цена (₽)</label>
+          <input type="number" id="edit-tx-price" class="input" value="${transaction.full_price || 0}">
+        </div>
+        
+        <div class="input-group">
+          <label class="input-label">Скидка (%)</label>
+          <input type="number" id="edit-tx-discount" class="input" value="${transaction.discount_percent || 0}" min="0" max="100">
+        </div>
+        
+        <div class="input-group">
+          <label class="input-label">Процент мастера</label>
+          <input type="number" id="edit-tx-percent" class="input" value="${transaction.master_percent || 50}" min="1" max="100">
+        </div>
+        
+        <div class="input-group">
+          <label class="input-label">Дата и время</label>
+          <input type="datetime-local" id="edit-tx-date" class="input" value="${formatDateTimeLocal(transaction.service_date)}">
+        </div>
+        
+        <button class="btn btn-primary" onclick="App.saveTransactionEdit('${transactionId}')">
+          <i data-lucide="check"></i>
+          <span>Сохранить</span>
+        </button>
+        
+        <button class="btn btn-danger" onclick="App.confirmDeleteTransaction('${transactionId}')">
+          <i data-lucide="trash-2"></i>
+          <span>Удалить услугу</span>
+        </button>
+      `);
+      
+      const select = document.getElementById('edit-tx-service');
+      if (select) {
+        select.addEventListener('change', e => {
+          const selected = services.find(s => s.service_name === e.target.value);
+          if (selected) {
+            document.getElementById('edit-tx-price').value = selected.base_price;
+          }
+        });
+      }
+    }).catch(() => {
+      toast('Ошибка загрузки каталога', 'error');
+    });
+  },
+  
+  async saveTransactionEdit(transactionId) {
+    const serviceName = document.getElementById('edit-tx-service').value;
+    const fullPrice = parseFloat(document.getElementById('edit-tx-price').value) || 0;
+    const discountPercent = parseFloat(document.getElementById('edit-tx-discount').value) || 0;
+    const masterPercent = parseFloat(document.getElementById('edit-tx-percent').value) || 50;
+    const dateInput = document.getElementById('edit-tx-date').value;
+    
+    if (!serviceName) {
+      toast('Выберите услугу', 'error');
+      return;
+    }
+    
+    const serviceDate = dateInput ? new Date(dateInput).toISOString() : undefined;
+    
+    showLoadingModal('Сохранение...');
+    
+    try {
+      await apiCall('updateTransaction', {
+        payload: {
+          transaction_id: transactionId,
+          updates: {
+            service_name: serviceName,
+            full_price: fullPrice,
+            discount_percent: discountPercent,
+            master_percent: masterPercent,
+            service_date: serviceDate
+          }
+        }
+      });
+      
+      const tx = State.fullData.transactions.find(t => t.id === transactionId);
+      if (tx) {
+        tx.service_name = serviceName;
+        tx.full_price = fullPrice;
+        tx.discount_percent = discountPercent;
+        tx.discount_amount = fullPrice * (discountPercent / 100);
+        tx.final_price = fullPrice - tx.discount_amount;
+        tx.master_percent = masterPercent;
+        tx.master_earnings = tx.final_price * (masterPercent / 100);
+        if (serviceDate) tx.service_date = serviceDate;
+      }
+      
+      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      
+      closeModal();
+      toast('Сохранено', 'success');
+      
+      syncData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+    } catch (e) {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    }
+  },
+  
+  confirmDeleteTransaction(transactionId) {
+    if (!confirm('Удалить эту услугу? Действие необратимо.')) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('deleteTransaction', {
+      payload: { transaction_id: transactionId }
+    }).then(() => {
+      State.fullData.transactions = State.fullData.transactions.filter(t => t.id !== transactionId);
+      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      
+      closeModal();
+      toast('Услуга удалена', 'success');
+      
+      syncData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+    }).catch(e => {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    });
+  },
+  
+  confirmDeleteVisit(visitId) {
+    const count = State.fullData.transactions.filter(t => t.visit_id === visitId).length;
+    if (!confirm(`Удалить весь визит (${count} услуг)? Действие необратимо.`)) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('deleteVisit', {
+      payload: { visit_id: visitId }
+    }).then(() => {
+      State.fullData.transactions = State.fullData.transactions.filter(t => t.visit_id !== visitId);
+      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      
+      closeModal();
+      toast('Визит удалён', 'success');
+      
+      syncData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+    }).catch(e => {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    });
+  },
+  
+  // ==================== РЕДАКТИРОВАНИЕ ВЫПЛАТ ====================
+  
+  editPayout(payoutId) {
+    const payout = State.fullData.payouts.find(p => p.id === payoutId);
+    if (!payout) {
+      toast('Выплата не найдена', 'error');
+      return;
+    }
+    
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Редактировать выплату</div>
+      
+      <div class="input-group">
+        <label class="input-label">Сумма (₽)</label>
+        <input type="number" id="edit-payout-amount" class="input" value="${payout.amount || 0}">
+      </div>
+      
+      <div class="input-group">
+        <label class="input-label">Комментарий</label>
+        <input type="text" id="edit-payout-comment" class="input" value="${escapeHtml(payout.comment || '')}" placeholder="наличными">
+      </div>
+      
+      <div class="input-group">
+        <label class="input-label">Дата</label>
+        <input type="datetime-local" id="edit-payout-date" class="input" value="${formatDateTimeLocal(payout.date)}">
+      </div>
+      
+      <button class="btn btn-primary" onclick="App.savePayoutEdit('${payoutId}')">
+        <i data-lucide="check"></i>
+        <span>Сохранить</span>
+      </button>
+      
+      <button class="btn btn-danger" onclick="App.confirmDeletePayout('${payoutId}')">
+        <i data-lucide="trash-2"></i>
+        <span>Удалить выплату</span>
+      </button>
+    `);
+  },
+  
+  async savePayoutEdit(payoutId) {
+    const amount = parseFloat(document.getElementById('edit-payout-amount').value) || 0;
+    const comment = document.getElementById('edit-payout-comment').value.trim();
+    const dateInput = document.getElementById('edit-payout-date').value;
+    
+    if (amount <= 0) {
+      toast('Введите сумму', 'error');
+      return;
+    }
+    
+    const date = dateInput ? new Date(dateInput).toISOString() : undefined;
+    
+    showLoadingModal('Сохранение...');
+    
+    try {
+      await apiCall('updatePayout', {
+        payload: {
+          payout_id: payoutId,
+          updates: { amount, comment, date }
+        }
+      });
+      
+      const p = State.fullData.payouts.find(x => x.id === payoutId);
+      if (p) {
+        p.amount = amount;
+        p.comment = comment;
+        if (date) p.date = date;
+      }
+      
+      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      
+      closeModal();
+      toast('Сохранено', 'success');
+      
+      syncData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+    } catch (e) {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    }
+  },
+  
+  confirmDeletePayout(payoutId) {
+    if (!confirm('Удалить эту выплату? Действие необратимо.')) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('deletePayout', {
+      payload: { payout_id: payoutId }
+    }).then(() => {
+      State.fullData.payouts = State.fullData.payouts.filter(p => p.id !== payoutId);
+      Storage.set(STORAGE_KEYS.DATA + '_full', State.fullData);
+      
+      closeModal();
+      toast('Выплата удалена', 'success');
+      
+      syncData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+    }).catch(e => {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    });
+  },
+
   closeModal() {
     const modal = document.getElementById('modal');
     const backdrop = document.getElementById('modal-backdrop');
@@ -870,39 +1203,66 @@ function renderJournalList() {
   if (!container || !State.fullData) return;
 
   const filter = State.journalFilter;
-  let items = [];
-
+  
+  let transactions = [];
   if (filter.type === 'all' || filter.type === 'visit') {
-    State.fullData.transactions.forEach(t => {
-      if (filter.salon !== 'all' && t.salon_id !== filter.salon) return;
-      items.push({
-        id: t.id,
+    transactions = State.fullData.transactions.filter(t => {
+      if (filter.salon !== 'all' && t.salon_id !== filter.salon) return false;
+      return true;
+    });
+  }
+  
+  let payouts = [];
+  if (filter.type === 'all' || filter.type === 'payout') {
+    payouts = State.fullData.payouts.filter(p => {
+      if (filter.salon !== 'all' && p.salon_id !== filter.salon) return false;
+      return true;
+    });
+  }
+  
+  const visitsMap = {};
+  transactions.forEach(t => {
+    const vid = t.visit_id || t.id;
+    if (!visitsMap[vid]) {
+      visitsMap[vid] = {
+        visit_id: vid,
         type: 'visit',
         date: t.service_date || t.created_at,
-        title: t.service_name,
-        amount: t.master_earnings,
-        salon_id: t.salon_id
-      });
+        salon_id: t.salon_id,
+        services: [],
+        total_earnings: 0,
+        total_price: 0
+      };
+    }
+    visitsMap[vid].services.push(t);
+    visitsMap[vid].total_earnings += t.master_earnings || 0;
+    visitsMap[vid].total_price += t.final_price || t.full_price || 0;
+    const tDate = new Date(t.service_date || t.created_at);
+    const vDate = new Date(visitsMap[vid].date);
+    if (tDate < vDate) visitsMap[vid].date = t.service_date || t.created_at;
+  });
+  
+  let items = [];
+  
+  Object.values(visitsMap).forEach(v => {
+    items.push(v);
+  });
+  
+  payouts.forEach(p => {
+    items.push({
+      payout_id: p.id,
+      type: 'payout',
+      date: p.date,
+      salon_id: p.salon_id,
+      amount: p.amount,
+      comment: p.comment
     });
-  }
-
-  if (filter.type === 'all' || filter.type === 'payout') {
-    State.fullData.payouts.forEach(p => {
-      if (filter.salon !== 'all' && p.salon_id !== filter.salon) return;
-      items.push({
-        id: p.id,
-        type: 'payout',
-        date: p.date,
-        title: 'Получено' + (p.comment ? ': ' + p.comment : ''),
-        amount: -p.amount,
-        salon_id: p.salon_id
-      });
-    });
-  }
-
+  });
+  
   items.sort((a, b) => new Date(b.date) - new Date(a.date));
+  
   const limited = items.slice(0, 100);
-
+  
   if (limited.length === 0) {
     container.innerHTML = `
       <div class="empty-state">
@@ -913,20 +1273,60 @@ function renderJournalList() {
     lucide.createIcons();
     return;
   }
-
+  
   const grouped = {};
   limited.forEach(item => {
     const key = formatDateFull(item.date);
     if (!grouped[key]) grouped[key] = [];
     grouped[key].push(item);
   });
-
+  
   container.innerHTML = Object.entries(grouped).map(([date, ops]) => `
     <div class="date-group">${date}</div>
-    ${ops.map(op => renderOpItem(op)).join('')}
+    ${ops.map(op => renderJournalItem(op)).join('')}
   `).join('');
-
+  
   lucide.createIcons();
+}
+
+function renderJournalItem(op) {
+  const salon = State.data.salons.find(s => s.salon_id === op.salon_id);
+  const salonName = salon ? salon.name : '';
+  const time = formatTime(op.date);
+  
+  if (op.type === 'payout') {
+    return `
+      <div class="op-item" onclick="App.editPayout('${op.payout_id}')">
+        <div class="op-status money">
+          <i data-lucide="banknote"></i>
+        </div>
+        <div class="op-content">
+          <div class="op-title">Получено${op.comment ? ': ' + escapeHtml(op.comment) : ''}</div>
+          <div class="op-meta">${escapeHtml(salonName)} · ${time}</div>
+        </div>
+        <div class="op-amount expense">−${formatMoney(op.amount)}</div>
+      </div>
+    `;
+  }
+  
+  const servicesCount = op.services.length;
+  const firstServiceName = op.services[0]?.service_name || 'Визит';
+  const title = servicesCount === 1 
+    ? firstServiceName 
+    : `${firstServiceName} +${servicesCount - 1} услуг`;
+  
+  return `
+    <div class="op-item" onclick="App.showVisitDetails('${op.visit_id}')">
+      <div class="op-status check">
+        <i data-lucide="check"></i>
+      </div>
+      <div class="op-content">
+        <div class="op-title">${escapeHtml(title)}</div>
+        <div class="op-meta">${escapeHtml(salonName)} · ${time} · ${servicesCount} ${servicesCount === 1 ? 'услуга' : 'услуг'}</div>
+      </div>
+      <div class="op-amount income">+${formatMoney(op.total_earnings)}</div>
+    </div>
+  `;
 }
 
 // ==================== РЕНДЕР: ОТЧЁТЫ ====================
@@ -1051,7 +1451,6 @@ function renderReportsContent() {
   const earned = transactions.reduce((sum, t) => sum + t.master_earnings, 0);
   const received = payouts.reduce((sum, p) => sum + p.amount, 0);
 
-    // Считаем уникальные визиты (по visit_id)
   const uniqueVisits = new Set(transactions.map(t => t.visit_id).filter(Boolean));
   const visitsCount = uniqueVisits.size;
 
@@ -1319,6 +1718,17 @@ function showModal(html) {
 
 function closeModal() {
   App.closeModal();
+}
+
+// ==================== МОДАЛКА ЗАГРУЗКИ ====================
+function showLoadingModal(text = 'Загрузка...') {
+  showModal(`
+    <div class="modal-handle"></div>
+    <div style="padding: 30px 0; text-align: center;">
+      <div class="spinner-large" style="margin: 0 auto 16px;"></div>
+      <div class="text-muted">${text}</div>
+    </div>
+  `);
 }
 
 // ==================== TOAST ====================
