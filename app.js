@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v3.1
-   Оптимизация: раздельные запросы, pending в UI, автосинк
+   LASHES APP — APP.JS v3.2
+   Оптимизация + система алертов
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -16,8 +16,10 @@ const STORAGE_KEYS = {
   LAST_FULL_SYNC: 'lash_last_full_sync'
 };
 
-const SYNC_INTERVAL = 5 * 60 * 1000; // 5 минут
-const FULL_DATA_TTL = 5 * 60 * 1000; // 5 минут
+const SYNC_INTERVAL = 5 * 60 * 1000;      // 5 минут
+const FULL_DATA_TTL = 5 * 60 * 1000;      // 5 минут
+const PENDING_BATCH_SIZE = 5;              // Максимум операций за раз
+const ALERT_CHECK_INTERVAL = 2 * 60 * 1000; // Проверка алертов раз в 2 минуты
 
 // ==================== СОСТОЯНИЕ ====================
 const State = {
@@ -35,6 +37,7 @@ const State = {
   currentScreen: 'loading',
   network: 'online',
   syncing: false,
+  lastOnlineAt: Date.now(),
   draftVisit: { services: [] },
   editingSalonId: null,
   journalFilter: { salon: 'all', type: 'all' },
@@ -44,6 +47,7 @@ const State = {
 // Глобальные id интервалов
 let servicePickerWaitInterval = null;
 let autoSyncInterval = null;
+let alertCheckInterval = null;
 
 // ==================== УТИЛИТЫ ====================
 function uuid() {
@@ -127,6 +131,294 @@ const Storage = {
   }
 };
 
+// ==================== СИСТЕМА АЛЕРТОВ ====================
+const Alerts = {
+  items: [],
+  modalShownAt: {},
+  
+  add(id, type, title, description, options = {}) {
+    const existing = this.items.find(a => a.id === id);
+    if (existing) {
+      existing.time = Date.now();
+      return;
+    }
+    
+    const alert = {
+      id: id,
+      type: type,
+      title: title,
+      description: description,
+      time: Date.now(),
+      showModal: options.showModal || false
+    };
+    
+    this.items.push(alert);
+    this.updateUI();
+    
+    if (alert.showModal) {
+      const lastShown = this.modalShownAt[id] || 0;
+      const cooldown = options.cooldown || 5 * 60 * 1000;
+      if (Date.now() - lastShown > cooldown) {
+        this.modalShownAt[id] = Date.now();
+        this.showCriticalModal(alert);
+      }
+    }
+  },
+  
+  remove(id) {
+    const before = this.items.length;
+    this.items = this.items.filter(a => a.id !== id);
+    if (this.items.length !== before) this.updateUI();
+  },
+  
+  clear() {
+    this.items = [];
+    this.updateUI();
+  },
+  
+  updateUI() {
+    const bell = document.getElementById('alert-bell');
+    const badge = document.getElementById('alert-badge');
+    if (!bell || !badge) return;
+    
+    if (this.items.length === 0) {
+      bell.classList.add('hidden');
+      return;
+    }
+    
+    bell.classList.remove('hidden');
+    badge.textContent = this.items.length > 9 ? '9+' : this.items.length;
+    
+    const hasError = this.items.some(a => a.type === 'error');
+    badge.style.background = hasError ? 'var(--danger)' : 'var(--warning)';
+  },
+  
+  showPanel() {
+    if (this.items.length === 0) {
+      showModal(`
+        <div class="modal-handle"></div>
+        <div class="modal-title">Уведомления</div>
+        <div class="empty-state">
+          <i data-lucide="check-circle"></i>
+          <div class="empty-state-text">Всё в порядке</div>
+          <p class="text-small text-muted mt-16">Проблем не обнаружено</p>
+        </div>
+      `);
+      return;
+    }
+    
+    const itemsHtml = this.items.map(alert => {
+      const icon = alert.type === 'error' ? 'alert-circle' :
+                   alert.type === 'warning' ? 'alert-triangle' : 'info';
+      return `
+        <div class="alert-item ${alert.type}">
+          <div class="alert-item-icon">
+            <i data-lucide="${icon}"></i>
+          </div>
+          <div class="alert-item-content">
+            <div class="alert-item-title">${escapeHtml(alert.title)}</div>
+            <div class="alert-item-desc">${escapeHtml(alert.description)}</div>
+            <div class="alert-item-time">${timeAgo(alert.time)}</div>
+          </div>
+        </div>
+      `;
+    }).join('');
+    
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="modal-title">Уведомления (${this.items.length})</div>
+      ${itemsHtml}
+      <button class="btn btn-primary mt-16" onclick="Alerts.copyForAdmin()">
+        <i data-lucide="copy"></i>
+        <span>Скопировать для админа</span>
+      </button>
+      <button class="btn btn-secondary" onclick="Alerts.forceSync()">
+        <i data-lucide="refresh-cw"></i>
+        <span>Попробовать синхронизировать</span>
+      </button>
+    `);
+  },
+  
+  showCriticalModal(alert) {
+    const icon = alert.type === 'error' ? 'alert-circle' : 'alert-triangle';
+    const cls = alert.type === 'error' ? 'error' : 'warning';
+    
+    const details = this.getDiagnostics();
+    
+    showModal(`
+      <div class="modal-handle"></div>
+      <div class="alert-modal-icon ${cls}">
+        <i data-lucide="${icon}"></i>
+      </div>
+      <div class="modal-title" style="text-align: center;">${escapeHtml(alert.title)}</div>
+      <div class="alert-message">${escapeHtml(alert.description)}</div>
+      
+      <details style="margin-bottom: 16px;">
+        <summary style="cursor: pointer; color: var(--text-2); font-size: 13px; padding: 8px 0;">
+          Показать детали для админа
+        </summary>
+        <div class="alert-details">${escapeHtml(details)}</div>
+      </details>
+      
+      <button class="btn btn-primary" onclick="Alerts.copyForAdmin()">
+        <i data-lucide="copy"></i>
+        <span>Скопировать для админа</span>
+      </button>
+      <button class="btn btn-secondary" onclick="closeModal()">
+        <span>Понятно</span>
+      </button>
+    `);
+  },
+  
+  getDiagnostics() {
+    const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
+    const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+    const lastSyncStr = lastSync ? new Date(lastSync).toLocaleString('ru-RU') : 'никогда';
+    
+    const alertsList = this.items.map(a => 
+      `• [${a.type.toUpperCase()}] ${a.title}\n  ${a.description}\n  ${new Date(a.time).toLocaleString('ru-RU')}`
+    ).join('\n\n');
+    
+    return `=== ПРОБЛЕМЫ ===
+${alertsList || 'Нет активных проблем'}
+
+=== СИСТЕМА ===
+Время: ${new Date().toLocaleString('ru-RU')}
+Сеть: ${State.network}
+Последняя синхронизация: ${lastSyncStr}
+Не отправлено операций: ${pending.length}
+Мастер: ${State.data.master.name || 'неизвестно'}
+Салоны: ${State.data.salons.length}
+
+=== БРАУЗЕР ===
+UserAgent: ${navigator.userAgent}
+Онлайн: ${navigator.onLine ? 'да' : 'нет'}`;
+  },
+  
+  async copyForAdmin() {
+    const text = this.getDiagnostics();
+    try {
+      await navigator.clipboard.writeText(text);
+      toast('Скопировано. Отправьте админу', 'success');
+    } catch (e) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        toast('Скопировано. Отправьте админу', 'success');
+      } catch (e2) {
+        toast('Не удалось скопировать', 'error');
+      }
+      document.body.removeChild(textarea);
+    }
+  },
+  
+  async forceSync() {
+    closeModal();
+    Alerts.remove('syncing');
+    Alerts.add('syncing', 'info', 'Синхронизация', 'Попытка синхронизации...');
+    
+    await flushPending();
+    const ok = await syncData(true);
+    const fullOk = await syncFullData(true);
+    
+    Alerts.remove('syncing');
+    
+    if (ok && fullOk) {
+      Alerts.clear();
+      toast('Синхронизировано', 'success');
+    } else {
+      toast('Не удалось. Проверьте интернет', 'error');
+    }
+  },
+  
+  check() {
+    const now = Date.now();
+    const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
+    const pending = Storage.get(STORAGE_KEYS.PENDING, []);
+    
+    // 1. Нет интернета
+    if (!navigator.onLine) {
+      this.add('offline', 'warning', 
+        'Нет интернета', 
+        'Приложение работает офлайн. Новые операции сохраняются и отправятся, когда появится сеть.'
+      );
+    } else {
+      this.remove('offline');
+    }
+    
+    // 2. Много pending
+    if (pending.length > 5) {
+      this.add('pending', 'warning',
+        `Не отправлено: ${pending.length}`,
+        'Много операций ждут отправки. Проверьте интернет или нажмите "Синхронизировать".',
+        { showModal: pending.length > 10, cooldown: 10 * 60 * 1000 }
+      );
+    } else if (pending.length > 0) {
+      this.add('pending', 'info',
+        `В очереди: ${pending.length}`,
+        'Операции ожидают отправки на сервер.'
+      );
+    } else {
+      this.remove('pending');
+    }
+    
+    // 3. Данные устарели
+    if (lastSync > 0) {
+      const hoursSinceSync = (now - lastSync) / 3600000;
+      if (hoursSinceSync > 24) {
+        this.add('stale', 'warning',
+          'Данные устарели',
+          `Последняя синхронизация была ${Math.round(hoursSinceSync)} ч назад. Нажмите "Синхронизировать".`,
+          { showModal: hoursSinceSync > 48, cooldown: 60 * 60 * 1000 }
+        );
+      } else if (hoursSinceSync > 6) {
+        this.add('stale', 'info',
+          'Данные не свежие',
+          `Синхронизация была ${Math.round(hoursSinceSync)} ч назад.`
+        );
+      } else {
+        this.remove('stale');
+      }
+    }
+    
+    // 4. Долго офлайн
+    if (State.network === 'offline' && State.lastOnlineAt) {
+      const offlineMinutes = (now - State.lastOnlineAt) / 60000;
+      if (offlineMinutes > 5) {
+        this.add('long_offline', 'error',
+          'Долго нет связи',
+          `Приложение офлайн ${Math.round(offlineMinutes)} мин. Проверьте сеть или VPN.`,
+          { showModal: offlineMinutes > 30, cooldown: 30 * 60 * 1000 }
+        );
+      }
+    } else if (State.network === 'online') {
+      State.lastOnlineAt = now;
+      this.remove('long_offline');
+    }
+  },
+  
+  serverError(errorMessage, context = '') {
+    this.add('server_error_' + Date.now(), 'error',
+      'Ошибка сервера',
+      `${context ? context + ': ' : ''}${errorMessage}. Попробуйте позже или сообщите админу.`,
+      { showModal: true, cooldown: 10 * 60 * 1000 }
+    );
+  },
+  
+  authError() {
+    this.add('auth_error', 'error',
+      'Проблема с доступом',
+      'Токен авторизации не работает. Обратитесь к администратору.',
+      { showModal: true, cooldown: 60 * 60 * 1000 }
+    );
+  }
+};
+
 // ==================== API ====================
 async function apiCall(action, params = {}, options = {}) {
   if (!State.token) throw new Error('Нет токена');
@@ -161,7 +453,23 @@ async function apiCall(action, params = {}, options = {}) {
     return data;
   } catch (e) {
     clearTimeout(timeoutId);
-    if (e.name === 'AbortError') throw new Error('Превышено время ожидания');
+    
+    if (e.name === 'AbortError') {
+      Alerts.add('timeout', 'warning',
+        'Сервер не отвечает',
+        'Запрос занял больше 20 секунд. Проверьте интернет.'
+      );
+      throw new Error('Превышено время ожидания');
+    }
+    
+    if (e.message && e.message.startsWith('HTTP 5')) {
+      Alerts.serverError(e.message);
+    }
+    
+    if (e.message && (e.message.includes('авторизац') || e.message.includes('токен'))) {
+      Alerts.authError();
+    }
+    
     throw e;
   }
 }
@@ -169,22 +477,49 @@ async function apiCall(action, params = {}, options = {}) {
 // ==================== СЕТЬ ====================
 function setNetwork(status) {
   State.network = status;
+  
+  if (status === 'online') {
+    State.lastOnlineAt = Date.now();
+  }
+  
   const el = document.getElementById('sync-indicator');
   const txt = document.getElementById('sync-text');
   if (!el || !txt) return;
 
-  el.classList.remove('online', 'syncing', 'offline');
+  el.classList.remove('online', 'syncing', 'offline', 'stale', 'old');
   el.classList.add(status);
 
   const pendingCount = Storage.get(STORAGE_KEYS.PENDING, []).length;
+  const lastSync = Storage.get(STORAGE_KEYS.LAST_SYNC, 0);
+  const minutesSinceSync = lastSync ? Math.round((Date.now() - lastSync) / 60000) : 0;
 
+  let text = '';
   if (status === 'online') {
-    txt.textContent = pendingCount > 0 ? `Отправить: ${pendingCount}` : 'Синхронизировано';
+    if (pendingCount > 0) {
+      text = `Отправить: ${pendingCount}`;
+    } else if (minutesSinceSync < 1) {
+      text = 'Только что';
+    } else if (minutesSinceSync < 60) {
+      text = `${minutesSinceSync} мин назад`;
+    } else {
+      text = `${Math.round(minutesSinceSync / 60)} ч назад`;
+    }
   } else if (status === 'syncing') {
-    txt.textContent = 'Синхронизация';
+    text = 'Синхронизация';
   } else {
-    txt.textContent = pendingCount > 0 ? `Офлайн · ${pendingCount}` : 'Офлайн';
+    text = pendingCount > 0 ? `Офлайн · ${pendingCount}` : 'Офлайн';
   }
+  
+  txt.textContent = text;
+  
+  // Помечаем устаревшие данные
+  if (status === 'online' && minutesSinceSync > 24 * 60) {
+    el.classList.add('old');
+  } else if (status === 'online' && minutesSinceSync > 60) {
+    el.classList.add('stale');
+  }
+  
+  Alerts.check();
 }
 
 async function syncData(silent = false) {
@@ -252,11 +587,15 @@ async function flushPending() {
     updatePendingUI();
     return 0;
   }
+  
+  // Батч: не больше N операций за раз
+  const batch = pending.slice(0, PENDING_BATCH_SIZE);
+  const rest = pending.slice(PENDING_BATCH_SIZE);
 
   const remaining = [];
   let sent = 0;
 
-  for (const op of pending) {
+  for (const op of batch) {
     try {
       if (op.type === 'add_visit') {
         await apiCall('addVisit', { payload: op.payload });
@@ -278,7 +617,7 @@ async function flushPending() {
     }
   }
 
-  Storage.set(STORAGE_KEYS.PENDING, remaining);
+  Storage.set(STORAGE_KEYS.PENDING, [...rest, ...remaining]);
   Storage.set(STORAGE_KEYS.DATA, State.data);
 
   updatePendingUI();
@@ -392,7 +731,32 @@ const App = {
     }
 
     const dateInput = document.getElementById('visit-date').value;
-    const serviceDate = dateInput ? new Date(dateInput).toISOString() : new Date().toISOString();
+    if (!dateInput) {
+      toast('Введите дату', 'error');
+      return;
+    }
+    
+    const parsedDate = new Date(dateInput);
+    const now = new Date();
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
+    if (isNaN(parsedDate.getTime())) {
+      toast('Некорректная дата', 'error');
+      return;
+    }
+    
+    if (parsedDate < oneYearAgo) {
+      toast('Дата слишком давняя (больше года назад)', 'error');
+      return;
+    }
+    
+    if (parsedDate > oneMonthAhead) {
+      toast('Дата слишком далеко в будущем', 'error');
+      return;
+    }
+    
+    const serviceDate = parsedDate.toISOString();
     const clientId = uuid();
 
     const servicesSnapshot = State.draftVisit.services.map(s => ({ ...s }));
@@ -413,7 +777,6 @@ const App = {
       }))
     };
 
-    // ОПТИМИСТИЧНО: добавляем в recentOps
     const optimistic = {
       id: clientId,
       type: 'visit',
@@ -453,18 +816,21 @@ const App = {
         if (State.currentScreen === 'home') renderHome();
         updatePendingUI();
 
-        // Обновляем полный кэш в фоне (для Журнала и Отчётов)
         syncFullData(true).then(() => {
           if (State.currentScreen === 'journal') renderJournalList();
         });
 
-        // Тихо обновляем быстрые данные
         syncData(true);
 
         toast('Визит сохранён', 'success');
       } catch (e) {
         console.error('Save visit error:', e);
         setNetwork('offline');
+        
+        if (e.message && e.message.includes('HTTP 5')) {
+          Alerts.serverError(e.message, 'Сохранение визита');
+        }
+        
         toast('Нет связи. Сохранено локально', 'error');
         updatePendingUI();
       }
@@ -557,6 +923,11 @@ const App = {
       } catch (e) {
         console.error('Save payout error:', e);
         setNetwork('offline');
+        
+        if (e.message && e.message.includes('HTTP 5')) {
+          Alerts.serverError(e.message, 'Сохранение выплаты');
+        }
+        
         toast('Нет связи. Сохранено локально', 'error');
         updatePendingUI();
       }
@@ -662,6 +1033,7 @@ const App = {
     };
     State.fullData = null;
     State.currentSalonId = '';
+    Alerts.clear();
     App.go('auth');
   },
 
@@ -1124,7 +1496,6 @@ const App = {
 
 // ==================== ПОКАЗ ЭКРАНА ====================
 function showScreen(name) {
-  // Если уходим с экрана service-picker — чистим interval
   if (name !== 'service-picker' && servicePickerWaitInterval) {
     clearInterval(servicePickerWaitInterval);
     servicePickerWaitInterval = null;
@@ -1337,7 +1708,6 @@ function renderJournalList() {
   const container = document.getElementById('journal-list');
   if (!container) return;
 
-  // Если нет полных данных — показываем спиннер
   if (!State.fullData) {
     container.innerHTML = '<div class="empty-state"><div class="spinner-large" style="margin: 0 auto;"></div></div>';
     return;
@@ -1773,7 +2143,6 @@ function renderServicePicker(mode) {
   const listEl = document.getElementById('service-picker-list');
   if (!listEl) return;
 
-  // Если в режиме добавления визита, но салоны ещё не загружены — ждём
   if (mode === 'visit' && (!State.data.salons || State.data.salons.length === 0)) {
     listEl.innerHTML = `
       <div class="empty-state">
@@ -1782,7 +2151,6 @@ function renderServicePicker(mode) {
       </div>
     `;
     
-    // Очищаем предыдущий interval
     if (servicePickerWaitInterval) {
       clearInterval(servicePickerWaitInterval);
       servicePickerWaitInterval = null;
@@ -2012,8 +2380,6 @@ async function init() {
     await flushPending();
     const ok = await syncData();
     
-    // Обновляем UI только если всё ещё на главном
-    // Не переключаем экран принудительно
     if (ok && State.currentScreen === 'home') {
       renderHome();
     }
@@ -2026,6 +2392,11 @@ async function init() {
     await flushPending();
     await syncData(true);
   }, SYNC_INTERVAL);
+
+  // Проверка алертов
+  Alerts.check();
+  if (alertCheckInterval) clearInterval(alertCheckInterval);
+  alertCheckInterval = setInterval(() => Alerts.check(), ALERT_CHECK_INTERVAL);
 
   window.addEventListener('online', async () => {
     await flushPending();
@@ -2113,3 +2484,6 @@ document.addEventListener('DOMContentLoaded', () => {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }
 });
+
+// ==================== ГЛОБАЛЬНЫЕ ФУНКЦИИ ====================
+window.Alerts = Alerts;
