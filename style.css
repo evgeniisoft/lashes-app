@@ -1021,3 +1021,170 @@ body {
   width: 0;
   height: 0;
 }
+/* ==================== ALERTS ==================== */
+.alert-bell {
+  position: relative;
+}
+
+.alert-badge {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
+  background: var(--danger);
+  color: white;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+/* Индикатор синхронизации — кликабельный */
+.sync-indicator {
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.sync-indicator:active {
+  background: var(--border);
+}
+
+/* Цвета индикатора по давности */
+.sync-indicator.stale .sync-dot {
+  background: var(--warning);
+}
+
+.sync-indicator.old .sync-dot {
+  background: var(--danger);
+}
+
+/* Модалка критической ошибки */
+.alert-modal-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 20px;
+}
+
+.alert-modal-icon.error {
+  background: #fee2e2;
+  color: var(--danger);
+}
+
+.alert-modal-icon.warning {
+  background: var(--warning-light);
+  color: #d97706;
+}
+
+.alert-modal-icon svg {
+  width: 32px;
+  height: 32px;
+}
+
+.alert-message {
+  text-align: center;
+  font-size: 15px;
+  color: var(--text-2);
+  margin-bottom: 20px;
+  line-height: 1.5;
+}
+
+.alert-details {
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 12px;
+  font-family: 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+  color: var(--text-2);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 200px;
+  overflow-y: auto;
+  margin-bottom: 16px;
+}
+
+/* Панель алертов */
+.alert-item {
+  display: flex;
+  gap: 12px;
+  padding: 14px;
+  background: var(--card);
+  border-radius: var(--radius);
+  margin-bottom: 8px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--warning);
+}
+
+.alert-item.error {
+  border-left-color: var(--danger);
+}
+
+.alert-item.warning {
+  border-left-color: var(--warning);
+}
+
+.alert-item.info {
+  border-left-color: var(--primary);
+}
+
+.alert-item-icon {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.alert-item.error .alert-item-icon {
+  background: #fee2e2;
+  color: var(--danger);
+}
+
+.alert-item.warning .alert-item-icon {
+  background: var(--warning-light);
+  color: #d97706;
+}
+
+.alert-item.info .alert-item-icon {
+  background: var(--primary-light);
+  color: var(--primary);
+}
+
+.alert-item-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.alert-item-content {
+  flex: 1;
+  min-width: 0;
+}
+
+.alert-item-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-1);
+  margin-bottom: 2px;
+}
+
+.alert-item-desc {
+  font-size: 13px;
+  color: var(--text-2);
+  line-height: 1.4;
+}
+
+.alert-item-time {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-top: 4px;
+}
