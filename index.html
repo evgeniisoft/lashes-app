@@ -218,12 +218,26 @@
       <button class="tab" data-period="year">Год</button>
     </div>
     
+    <!-- Селектор месяца (показывается только для "Месяц") -->
+    <div id="reports-month-picker" style="display: none; margin-bottom: 16px;">
+      <select id="reports-month-select" class="select"></select>
+    </div>
+    
+    <!-- Заголовок периода -->
+    <div class="section-title" id="reports-period-label" style="margin-top: 4px;"></div>
+    
+    <!-- Сводка за период -->
     <div class="card" id="reports-summary"></div>
     
-    <div class="section-title">По салонам</div>
+    <!-- Общий долг -->
+    <div class="card" id="reports-total-debt" style="background: #fef2f2; border-color: #fecaca;"></div>
+    
+    <!-- По салонам -->
+    <div class="section-title" id="reports-by-salon-title">По салонам</div>
     <div id="reports-by-salon"></div>
     
-    <div class="section-title">Топ услуг</div>
+    <!-- Топ услуг -->
+    <div class="section-title">Топ услуг за период</div>
     <div class="card" id="reports-top-services"></div>
     
   </div>
