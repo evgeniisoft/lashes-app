@@ -1,6 +1,6 @@
 /* ============================================================
-   LASHES APP — APP.JS v3.5
-   Фикс: тап на услугу, кэш услуг, mergeRecentOps
+   LASHES APP — APP.JS v3.6
+   Офлайн-режим: кэш услуг в localStorage, fallback при ошибках сети
    ============================================================ */
 
 // ==================== КОНФИГ ====================
@@ -13,7 +13,8 @@ const STORAGE_KEYS = {
   PENDING: 'lash_pending',
   SALON: 'lash_current_salon',
   LAST_SYNC: 'lash_last_sync',
-  LAST_FULL_SYNC: 'lash_last_full_sync'
+  LAST_FULL_SYNC: 'lash_last_full_sync',
+  SERVICES_CACHE: 'lash_services_cache'
 };
 
 const SYNC_INTERVAL = 5 * 60 * 1000;
@@ -136,6 +137,7 @@ const Storage = {
 };
 
 // ==================== КЭШ УСЛУГ ====================
+// Быстрый кэш в памяти
 function getCachedServices(salonId) {
   const cached = State.servicesCache[salonId];
   if (!cached) return null;
@@ -155,6 +157,36 @@ function clearServicesCache(salonId) {
     delete State.servicesCache[salonId];
   } else {
     State.servicesCache = {};
+  }
+}
+
+// Кэш в localStorage — для офлайн-режима
+function getAllServicesFromStorage() {
+  return Storage.get(STORAGE_KEYS.SERVICES_CACHE, {});
+}
+
+function getServicesFromStorage(salonId) {
+  const cache = getAllServicesFromStorage();
+  const entry = cache[salonId];
+  return entry ? entry.services : null;
+}
+
+function saveServicesToStorage(salonId, services) {
+  const cache = getAllServicesFromStorage();
+  cache[salonId] = {
+    services: services,
+    loadedAt: Date.now()
+  };
+  Storage.set(STORAGE_KEYS.SERVICES_CACHE, cache);
+}
+
+function clearServicesStorage(salonId) {
+  if (salonId) {
+    const cache = getAllServicesFromStorage();
+    delete cache[salonId];
+    Storage.set(STORAGE_KEYS.SERVICES_CACHE, cache);
+  } else {
+    Storage.remove(STORAGE_KEYS.SERVICES_CACHE);
   }
 }
 
@@ -354,6 +386,10 @@ UserAgent: ${navigator.userAgent}
     const ok = await syncData(true);
     const fullOk = await syncFullData(true);
     
+    if (ok) {
+      await syncAllServicesToCache();
+    }
+    
     Alerts.remove('syncing');
     
     if (ok && fullOk) {
@@ -500,15 +536,61 @@ async function apiCall(action, params = {}, options = {}) {
 
 // ==================== ЗАГРУЗКА УСЛУГ ====================
 async function fetchServices(salonId, force = false) {
+  // 1. Проверяем быстрый кэш в памяти
   if (!force) {
-    const cached = getCachedServices(salonId);
-    if (cached) return cached;
+    const memoryCached = getCachedServices(salonId);
+    if (memoryCached) return memoryCached;
   }
   
-  const data = await apiCall('getServices', { salon_id: salonId });
-  const services = data.success ? (data.services || []) : [];
-  setCachedServices(salonId, services);
-  return services;
+  // 2. Если офлайн — берём из localStorage
+  if (!navigator.onLine) {
+    const localStorageCached = getServicesFromStorage(salonId);
+    if (localStorageCached) {
+      setCachedServices(salonId, localStorageCached);
+      return localStorageCached;
+    }
+    throw new Error('Нет интернета. Услуги не сохранены локально.');
+  }
+  
+  // 3. Онлайн — запрос к API
+  try {
+    const data = await apiCall('getServices', { salon_id: salonId });
+    const services = data.success ? (data.services || []) : [];
+    setCachedServices(salonId, services);
+    saveServicesToStorage(salonId, services);
+    return services;
+  } catch (e) {
+    // 4. При ошибке сети — fallback на localStorage
+    const localStorageCached = getServicesFromStorage(salonId);
+    if (localStorageCached) {
+      setCachedServices(salonId, localStorageCached);
+      return localStorageCached;
+    }
+    throw e;
+  }
+}
+
+// Фоновая синхронизация всех услуг в localStorage
+async function syncAllServicesToCache() {
+  if (!navigator.onLine) return;
+  if (!State.data.salons || State.data.salons.length === 0) return;
+  
+  console.log('Синхронизация каталога услуг в фоне...');
+  
+  for (const salon of State.data.salons) {
+    try {
+      const data = await apiCall('getServices', { salon_id: salon.salon_id });
+      if (data.success) {
+        const services = data.services || [];
+        saveServicesToStorage(salon.salon_id, services);
+        setCachedServices(salon.salon_id, services);
+      }
+    } catch (e) {
+      console.warn(`Не удалось загрузить услуги для салона "${salon.name}":`, e);
+    }
+  }
+  
+  console.log('Каталог услуг синхронизирован');
 }
 
 // ==================== СЕТЬ ====================
@@ -576,32 +658,27 @@ function mergeRecentOps(serverOps) {
   const localOps = State.data.recentOps || [];
   const localPending = localOps.filter(op => op.status === 'pending');
   
-  // Если нет локальных pending — берём серверные
   if (localPending.length === 0) {
     return (serverOps || []).slice(0, 20);
   }
   
-  // Строим карту серверных по id
   const serverMap = {};
   (serverOps || []).forEach(op => { serverMap[op.id] = op; });
   
   const result = [];
   const usedIds = new Set();
   
-  // 1. Все серверные — берём как есть
   (serverOps || []).forEach(op => {
     result.push(op);
     usedIds.add(op.id);
   });
   
-  // 2. Локальные pending, которых нет на сервере — добавляем
   localPending.forEach(op => {
     if (!usedIds.has(op.id)) {
       result.push(op);
     }
   });
   
-  // Сортируем и ограничиваем
   result.sort((a, b) => new Date(b.date || b.service_date) - new Date(a.date || a.service_date));
   return result.slice(0, 20);
 }
@@ -614,10 +691,12 @@ async function syncData(silent = false) {
   setNetwork('syncing');
 
   try {
-    // Запоминаем старые значения для сравнения
     const oldTotalDebt = State.data.totalDebt;
     const oldSalonsDebt = JSON.stringify(
       (State.data.salons || []).map(s => ({ id: s.salon_id, debt: s.debt }))
+    );
+    const oldRecentIds = JSON.stringify(
+      (State.data.recentOps || []).slice(0, 5).map(op => op.id + ':' + op.status)
     );
 
     const quick = await apiCall('getQuickData');
@@ -631,15 +710,18 @@ async function syncData(silent = false) {
       Storage.set(STORAGE_KEYS.DATA, State.data);
       Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
 
-      // Проверяем, изменились ли данные
       const newSalonsDebt = JSON.stringify(
         (State.data.salons || []).map(s => ({ id: s.salon_id, debt: s.debt }))
       );
+      const newRecentIds = JSON.stringify(
+        (State.data.recentOps || []).slice(0, 5).map(op => op.id + ':' + op.status)
+      );
+
       const dataChanged = 
         oldTotalDebt !== State.data.totalDebt || 
-        oldSalonsDebt !== newSalonsDebt;
+        oldSalonsDebt !== newSalonsDebt ||
+        oldRecentIds !== newRecentIds;
 
-      // Если на главном и данные изменились — перерисовываем
       if (dataChanged && State.currentScreen === 'home') {
         renderHome();
       }
@@ -763,32 +845,32 @@ function updatePendingUI() {
 // ==================== ГЛАВНЫЙ РОУТЕР ====================
 const App = {
   go(screen) {
-    if (screen === "loading" || screen === "auth") {
+    if (screen === 'loading' || screen === 'auth') {
       showScreen(screen);
       return;
     }
     if (!State.token) {
-      showScreen("auth");
+      showScreen('auth');
       return;
     }
 
     State.currentScreen = screen;
 
-    if (screen === "home") {
+    if (screen === 'home') {
       renderHome();
-    } else if (screen === "add-visit") {
+    } else if (screen === 'add-visit') {
       renderAddVisit();
-    } else if (screen === "payout") {
+    } else if (screen === 'payout') {
       renderPayout();
-    } else if (screen === "journal") {
+    } else if (screen === 'journal') {
       renderJournal();
-    } else if (screen === "reports") {
+    } else if (screen === 'reports') {
       renderReports();
-    } else if (screen === "settings") {
+    } else if (screen === 'settings') {
       renderSettings();
-    } else if (screen === "salons") {
+    } else if (screen === 'salons') {
       renderSalons();
-    } else if (screen === "salon-edit") {
+    } else if (screen === 'salon-edit') {
       renderSalonEdit();
     }
 
@@ -798,35 +880,35 @@ const App = {
 
   openServicePicker() {
     if (!State.data.salons || State.data.salons.length === 0) {
-      toast("Загрузка... подождите секунду", "error");
+      toast('Загрузка... подождите секунду', 'error');
       syncData(true).then(() => {
         if (State.data.salons && State.data.salons.length > 0) {
-          renderServicePicker("visit");
-          showScreen("service-picker");
+          renderServicePicker('visit');
+          showScreen('service-picker');
         } else {
-          toast("Не удалось загрузить салоны", "error");
+          toast('Не удалось загрузить салоны', 'error');
         }
       });
       return;
     }
 
-    renderServicePicker("visit");
-    showScreen("service-picker");
+    renderServicePicker('visit');
+    showScreen('service-picker');
   },
 
   pickService(serviceId) {
     const list = State._servicePickerList || [];
-    const service = list.find((s) => s.service_id === serviceId);
-
+    const service = list.find(s => s.service_id === serviceId);
+    
     if (!service) {
-      toast("Услуга не найдена", "error");
+      toast('Услуга не найдена', 'error');
       return;
     }
-
+    
     App.addServiceToVisit({
       service_id: service.service_id,
       service_name: service.service_name,
-      base_price: service.base_price,
+      base_price: service.base_price
     });
   },
 
@@ -836,149 +918,138 @@ const App = {
       service_name: service.service_name,
       full_price: service.base_price,
       discount_percent: 0,
-      master_percent: App.getCurrentSalon()?.default_percent || 50,
+      master_percent: App.getCurrentSalon()?.default_percent || 50
     });
     renderVisitServices();
-    App.go("add-visit");
+    App.go('add-visit');
   },
 
   async saveVisit() {
-    const btn = document.getElementById("btn-save-visit");
+    const btn = document.getElementById('btn-save-visit');
     const salonId = State.currentSalonId;
 
     if (!salonId) {
-      toast("Выберите салон", "error");
+      toast('Выберите салон', 'error');
       return;
     }
     if (State.draftVisit.services.length === 0) {
-      toast("Добавьте услугу", "error");
+      toast('Добавьте услугу', 'error');
       return;
     }
 
-    const dateInput = document.getElementById("visit-date").value;
+    const dateInput = document.getElementById('visit-date').value;
     if (!dateInput) {
-      toast("Введите дату", "error");
+      toast('Введите дату', 'error');
       return;
     }
-
+    
     const parsedDate = new Date(dateInput);
     const now = new Date();
-    const oneYearAgo = new Date(
-      now.getFullYear() - 1,
-      now.getMonth(),
-      now.getDate(),
-    );
-    const oneMonthAhead = new Date(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      now.getDate(),
-    );
-
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
     if (isNaN(parsedDate.getTime())) {
-      toast("Некорректная дата", "error");
+      toast('Некорректная дата', 'error');
       return;
     }
-
+    
     if (parsedDate < oneYearAgo) {
-      toast("Дата слишком давняя (больше года назад)", "error");
+      toast('Дата слишком давняя (больше года назад)', 'error');
       return;
     }
-
+    
     if (parsedDate > oneMonthAhead) {
-      toast("Дата слишком далеко в будущем", "error");
+      toast('Дата слишком далеко в будущем', 'error');
       return;
     }
-
+    
     const serviceDate = parsedDate.toISOString();
     const clientId = uuid();
 
-    const servicesSnapshot = State.draftVisit.services.map((s) => ({ ...s }));
+    const servicesSnapshot = State.draftVisit.services.map(s => ({ ...s }));
     const totalEarnings = servicesSnapshot.reduce((sum, s) => {
-      const finalPrice =
-        s.full_price - (s.full_price * s.discount_percent) / 100;
-      return sum + (finalPrice * s.master_percent) / 100;
+      const finalPrice = s.full_price - (s.full_price * s.discount_percent / 100);
+      return sum + (finalPrice * s.master_percent / 100);
     }, 0);
 
     const payload = {
       service_date: serviceDate,
       salon_id: salonId,
       client_id: clientId,
-      services: servicesSnapshot.map((s) => ({
+      services: servicesSnapshot.map(s => ({
         service_name: s.service_name,
         full_price: s.full_price,
         discount_percent: s.discount_percent,
-        master_percent: s.master_percent,
-      })),
+        master_percent: s.master_percent
+      }))
     };
 
     const optimistic = {
       id: clientId,
-      type: "visit",
+      type: 'visit',
       date: serviceDate,
       service_date: serviceDate,
       title: servicesSnapshot[0].service_name,
       amount: totalEarnings,
       salon_id: salonId,
-      status: "pending",
+      status: 'pending'
     };
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
-
+    
     // Оптимистично обновляем долги
     State.data.totalDebt = (State.data.totalDebt || 0) + totalEarnings;
-    State.data.salons = State.data.salons.map((s) => {
+    State.data.salons = State.data.salons.map(s => {
       if (s.salon_id === salonId) {
         return { ...s, debt: (s.debt || 0) + totalEarnings };
       }
       return s;
     });
-
+    
     Storage.set(STORAGE_KEYS.DATA, State.data);
 
-    App.go("home");
+    App.go('home');
 
     addPending({
       id: clientId,
-      type: "add_visit",
+      type: 'add_visit',
       payload: payload,
       created_at: Date.now(),
-      attempts: 0,
+      attempts: 0
     });
 
     (async () => {
       try {
-        await apiCall("addVisit", { payload });
+        await apiCall('addVisit', { payload });
 
-        const remaining = Storage.get(STORAGE_KEYS.PENDING, []).filter(
-          (o) => o.id !== clientId,
-        );
+        const remaining = Storage.get(STORAGE_KEYS.PENDING, []).filter(o => o.id !== clientId);
         Storage.set(STORAGE_KEYS.PENDING, remaining);
 
-        State.data.recentOps = State.data.recentOps.map((op) => {
-          if (op.id === clientId) return { ...op, status: "saved" };
+        State.data.recentOps = State.data.recentOps.map(op => {
+          if (op.id === clientId) return { ...op, status: 'saved' };
           return op;
         });
         Storage.set(STORAGE_KEYS.DATA, State.data);
 
-        if (State.currentScreen === "home") renderHome();
+        if (State.currentScreen === 'home') renderHome();
         updatePendingUI();
 
         syncFullData(true).then(() => {
-          if (State.currentScreen === "journal") renderJournalList();
-          if (State.currentScreen === "reports") renderReportsContent();
+          if (State.currentScreen === 'journal') renderJournalList();
+          if (State.currentScreen === 'reports') renderReportsContent();
         });
 
         syncData(true);
 
-        toast("Визит сохранён", "success");
+        toast('Визит сохранён', 'success');
       } catch (e) {
-        console.error("Save visit error:", e);
-        setNetwork("offline");
-
-        if (e.message && e.message.includes("HTTP 5")) {
-          Alerts.serverError(e.message, "Сохранение визита");
+        console.error('Save visit error:', e);
+        setNetwork('offline');
+        
+        if (e.message && e.message.includes('HTTP 5')) {
+          Alerts.serverError(e.message, 'Сохранение визита');
         }
-
-        toast("Нет связи. Сохранено локально", "error");
+        
+        toast('Нет связи. Сохранено локально', 'error');
         updatePendingUI();
       }
     })();
@@ -999,16 +1070,16 @@ const App = {
 
   async savePayout() {
     const salonId = State.currentSalonId;
-    const amountInput = document.getElementById("payout-amount");
-    const commentInput = document.getElementById("payout-comment");
+    const amountInput = document.getElementById('payout-amount');
+    const commentInput = document.getElementById('payout-comment');
 
     const amount = parseMoney(amountInput.value);
     if (!salonId) {
-      toast("Выберите салон", "error");
+      toast('Выберите салон', 'error');
       return;
     }
     if (amount <= 0) {
-      toast("Введите сумму", "error");
+      toast('Введите сумму', 'error');
       return;
     }
 
@@ -1019,85 +1090,83 @@ const App = {
       salon_id: salonId,
       amount: amount,
       comment: comment,
-      client_id: clientId,
+      client_id: clientId
     };
 
     const optimistic = {
       id: clientId,
-      type: "payout",
+      type: 'payout',
       date: new Date().toISOString(),
-      title: "Получено" + (comment ? ": " + comment : ""),
+      title: 'Получено' + (comment ? ': ' + comment : ''),
       amount: -amount,
       salon_id: salonId,
-      status: "pending",
+      status: 'pending'
     };
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
-
+    
     // Оптимистично уменьшаем долг
     State.data.totalDebt = (State.data.totalDebt || 0) - amount;
-    State.data.salons = State.data.salons.map((s) => {
+    State.data.salons = State.data.salons.map(s => {
       if (s.salon_id === salonId) {
         return { ...s, debt: (s.debt || 0) - amount };
       }
       return s;
     });
-
+    
     Storage.set(STORAGE_KEYS.DATA, State.data);
 
-    App.go("home");
+    App.go('home');
 
     addPending({
       id: clientId,
-      type: "add_payout",
+      type: 'add_payout',
       payload: payload,
       created_at: Date.now(),
-      attempts: 0,
+      attempts: 0
     });
 
     (async () => {
       try {
-        await apiCall("addPayout", { payload });
+        await apiCall('addPayout', { payload });
 
-        const remaining = Storage.get(STORAGE_KEYS.PENDING, []).filter(
-          (o) => o.id !== clientId,
-        );
+        const remaining = Storage.get(STORAGE_KEYS.PENDING, []).filter(o => o.id !== clientId);
         Storage.set(STORAGE_KEYS.PENDING, remaining);
 
-        State.data.recentOps = State.data.recentOps.map((op) => {
-          if (op.id === clientId) return { ...op, status: "saved" };
+        State.data.recentOps = State.data.recentOps.map(op => {
+          if (op.id === clientId) return { ...op, status: 'saved' };
           return op;
         });
         Storage.set(STORAGE_KEYS.DATA, State.data);
 
-        if (State.currentScreen === "home") renderHome();
+        if (State.currentScreen === 'home') renderHome();
         updatePendingUI();
 
         syncFullData(true).then(() => {
-          if (State.currentScreen === "journal") renderJournalList();
-          if (State.currentScreen === "reports") renderReportsContent();
+          if (State.currentScreen === 'journal') renderJournalList();
+          if (State.currentScreen === 'reports') renderReportsContent();
         });
 
         syncData(true);
 
-        toast("Выплата сохранена", "success");
+        toast('Выплата сохранена', 'success');
       } catch (e) {
-        console.error("Save payout error:", e);
-        setNetwork("offline");
-
-        if (e.message && e.message.includes("HTTP 5")) {
-          Alerts.serverError(e.message, "Сохранение выплаты");
+        console.error('Save payout error:', e);
+        setNetwork('offline');
+        
+        if (e.message && e.message.includes('HTTP 5')) {
+          Alerts.serverError(e.message, 'Сохранение выплаты');
         }
-
-        toast("Нет связи. Сохранено локально", "error");
+        
+        toast('Нет связи. Сохранено локально', 'error');
         updatePendingUI();
       }
     })();
   },
 
   setPayoutAmount(value) {
-    const input = document.getElementById("payout-amount");
+    const input = document.getElementById('payout-amount');
     if (input) {
-      if (value === "all") {
+      if (value === 'all') {
         const salon = App.getCurrentSalon();
         input.value = salon ? Math.round(salon.debt) : 0;
       } else {
@@ -1109,20 +1178,17 @@ const App = {
   switchSalon(salonId) {
     State.currentSalonId = salonId;
     Storage.set(STORAGE_KEYS.SALON, salonId);
-    if (State.currentScreen === "home") {
+    if (State.currentScreen === 'home') {
       renderHome();
     }
   },
 
   getCurrentSalon() {
-    return (
-      State.data.salons.find((s) => s.salon_id === State.currentSalonId) ||
-      State.data.salons[0]
-    );
+    return State.data.salons.find(s => s.salon_id === State.currentSalonId) || State.data.salons[0];
   },
 
   showProfile() {
-    const name = State.data.master.name || "Мастер";
+    const name = State.data.master.name || 'Мастер';
     showModal(`
       <div class="modal-handle"></div>
       <div class="modal-title">Профиль</div>
@@ -1147,17 +1213,17 @@ const App = {
       </div>
       <div class="report-row">
         <span class="report-label">Не отправлено</span>
-        <span class="report-value ${pending.length > 0 ? "danger" : "success"}" style="font-size: 15px;">${pending.length}</span>
+        <span class="report-value ${pending.length > 0 ? 'danger' : 'success'}" style="font-size: 15px;">${pending.length}</span>
       </div>
       <div class="report-row">
         <span class="report-label">Статус</span>
-        <span class="report-value" style="font-size: 15px;">${State.network === "online" ? "Онлайн" : State.network === "syncing" ? "Синхронизация" : "Офлайн"}</span>
+        <span class="report-value" style="font-size: 15px;">${State.network === 'online' ? 'Онлайн' : State.network === 'syncing' ? 'Синхронизация' : 'Офлайн'}</span>
       </div>
       <button class="btn btn-primary mt-16" onclick="App.forceRefresh()">
         <i data-lucide="refresh-cw"></i>
         <span>Обновить сейчас</span>
       </button>
-      <button class="btn btn-secondary" onclick="App.sendPending()" ${pending.length === 0 ? "disabled" : ""}>
+      <button class="btn btn-secondary" onclick="App.sendPending()" ${pending.length === 0 ? 'disabled' : ''}>
         <i data-lucide="upload"></i>
         <span>Отправить ожидающие (${pending.length})</span>
       </button>
@@ -1170,7 +1236,10 @@ const App = {
     await flushPending();
     await syncData();
     await syncFullData(true);
-    toast("Обновлено", "success");
+    if (navigator.onLine) {
+      await syncAllServicesToCache();
+    }
+    toast('Обновлено', 'success');
     App.go(State.currentScreen);
   },
 
@@ -1179,75 +1248,76 @@ const App = {
     const sent = await flushPending();
     const remaining = Storage.get(STORAGE_KEYS.PENDING, []);
     if (remaining.length === 0) {
-      toast(`Все отправлено (${sent})`, "success");
+      toast(`Все отправлено (${sent})`, 'success');
     } else {
-      toast(`Не удалось отправить ${remaining.length}`, "error");
+      toast(`Не удалось отправить ${remaining.length}`, 'error');
     }
   },
 
   logout() {
-    if (!confirm("Выйти из приложения? Данные на устройстве будут удалены."))
-      return;
-    Object.values(STORAGE_KEYS).forEach((key) => Storage.remove(key));
-    State.token = "";
+    if (!confirm('Выйти из приложения? Данные на устройстве будут удалены.')) return;
+    Object.values(STORAGE_KEYS).forEach(key => Storage.remove(key));
+    State.token = '';
     State.data = {
-      master: { name: "", phone: "" },
+      master: { name: '', phone: '' },
       salons: [],
       totalDebt: 0,
-      recentOps: [],
+      recentOps: []
     };
     State.fullData = null;
-    State.currentSalonId = "";
+    State.currentSalonId = '';
     State.servicesCache = {};
     State.editingSalonId = null;
     State._servicePickerList = [];
     State._editingSalonServices = [];
     Alerts.clear();
-    App.go("auth");
+    App.go('auth');
   },
 
   async saveSalon() {
-    const nameInput = document.getElementById("salon-edit-name");
-    const percentInput = document.getElementById("salon-edit-percent");
+    if (!navigator.onLine) {
+      toast('Нет интернета. Сохраните салон когда появится связь.', 'error');
+      return;
+    }
+    
+    const nameInput = document.getElementById('salon-edit-name');
+    const percentInput = document.getElementById('salon-edit-percent');
     const name = nameInput.value.trim();
     const percent = parseInt(percentInput.value) || 50;
 
     if (!name) {
-      toast("Введите название", "error");
+      toast('Введите название', 'error');
       return;
     }
 
-    const btn = document.getElementById("btn-save-salon");
+    const btn = document.getElementById('btn-save-salon');
     btn.disabled = true;
     btn.innerHTML = '<div class="spinner-btn"></div><span>Сохранение...</span>';
 
     try {
       if (State.editingSalonId) {
-        await apiCall("manageSalon", {
-          salon_action: "update",
-          payload: {
-            salon_id: State.editingSalonId,
-            name,
-            default_percent: percent,
-          },
+        await apiCall('manageSalon', {
+          salon_action: 'update',
+          payload: { salon_id: State.editingSalonId, name, default_percent: percent }
         });
-        toast("Сохранено", "success");
+        toast('Сохранено', 'success');
       } else {
-        await apiCall("manageSalon", {
-          salon_action: "create",
-          payload: { name, default_percent: percent },
+        await apiCall('manageSalon', {
+          salon_action: 'create',
+          payload: { name, default_percent: percent }
         });
-        toast("Салон создан", "success");
+        toast('Салон создан', 'success');
       }
-
+      
       btn.disabled = false;
       btn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
-
+      
       clearServicesCache();
       await syncData();
-      App.go("salons");
+      syncAllServicesToCache();
+      App.go('salons');
     } catch (e) {
-      toast("Ошибка: " + e.message, "error");
+      toast('Ошибка: ' + e.message, 'error');
       btn.disabled = false;
       btn.innerHTML = '<i data-lucide="check"></i><span>Сохранить</span>';
       lucide.createIcons();
@@ -1256,40 +1326,39 @@ const App = {
 
   async deleteSalon() {
     if (!State.editingSalonId) return;
-
-    const salon = State.data.salons.find(
-      (s) => s.salon_id === State.editingSalonId,
-    );
-    const salonName = salon ? salon.name : "";
-
-    if (
-      !confirm(
-        `Удалить салон "${salonName}"?\n\nВизиты и выплаты этого салона ОСТАНУТСЯ в таблице, но будут скрыты из интерфейса.\n\nУслуги салона будут скрыты из каталога.\n\nОтменить это действие нельзя.`,
-      )
-    )
+    
+    if (!navigator.onLine) {
+      toast('Нет интернета. Удалите салон когда появится связь.', 'error');
       return;
+    }
+    
+    const salon = State.data.salons.find(s => s.salon_id === State.editingSalonId);
+    const salonName = salon ? salon.name : '';
+    
+    if (!confirm(`Удалить салон "${salonName}"?\n\nВизиты и выплаты этого салона ОСТАНУТСЯ в таблице, но будут скрыты из интерфейса.\n\nУслуги салона будут скрыты из каталога.\n\nОтменить это действие нельзя.`)) return;
 
-    showLoadingModal("Удаление салона...");
-
+    showLoadingModal('Удаление салона...');
+    
     try {
-      const result = await apiCall("manageSalon", {
-        salon_action: "delete",
-        payload: { salon_id: State.editingSalonId },
+      const result = await apiCall('manageSalon', {
+        salon_action: 'delete',
+        payload: { salon_id: State.editingSalonId }
       });
       clearServicesCache(State.editingSalonId);
+      clearServicesStorage(State.editingSalonId);
       await syncData();
       closeModal();
-      toast(result.message || "Салон удалён", "success");
-      App.go("salons");
+      toast(result.message || 'Салон удалён', 'success');
+      App.go('salons');
     } catch (e) {
       closeModal();
-      toast("Ошибка: " + e.message, "error");
+      toast('Ошибка: ' + e.message, 'error');
     }
   },
 
   editSalon(salonId) {
     State.editingSalonId = salonId;
-    App.go("salon-edit");
+    App.go('salon-edit');
   },
 
   showServicesManage() {
@@ -1298,9 +1367,7 @@ const App = {
       <div class="modal-handle"></div>
       <div class="modal-title">Прайс-лист</div>
       <p class="text-small text-muted mb-16">Выберите салон для настройки</p>
-      ${salons
-        .map(
-          (s) => `
+      ${salons.map(s => `
         <div class="settings-row" onclick="App.editSalon('${s.salon_id}')">
           <div class="settings-icon"><i data-lucide="building-2"></i></div>
           <div class="settings-content">
@@ -1309,59 +1376,64 @@ const App = {
           </div>
           <i data-lucide="chevron-right" class="settings-chevron"></i>
         </div>
-      `,
-        )
-        .join("")}
+      `).join('')}
     `);
   },
 
   openServicePickerForSalon() {
-    renderServicePicker("salon-edit");
-    showScreen("service-picker");
+    renderServicePicker('salon-edit');
+    showScreen('service-picker');
   },
 
   async saveSalonService(service) {
-    if (!service.name || !service.name.trim()) {
-      toast("Введите название услуги", "error");
+    if (!navigator.onLine) {
+      toast('Нет интернета. Сохраните услугу когда появится связь.', 'error');
       return;
     }
-
+    
+    if (!service.name || !service.name.trim()) {
+      toast('Введите название услуги', 'error');
+      return;
+    }
+    
     try {
-      await apiCall("manageService", {
-        service_action: "create",
+      await apiCall('manageService', {
+        service_action: 'create',
         payload: {
           salon_id: State.editingSalonId,
           service_name: service.name.trim(),
-          base_price: service.price || 0,
-        },
+          base_price: service.price || 0
+        }
       });
       clearServicesCache(State.editingSalonId);
-      toast("Услуга добавлена", "success");
-      App.go("salon-edit");
+      clearServicesStorage(State.editingSalonId);
+      toast('Услуга добавлена', 'success');
+      App.go('salon-edit');
     } catch (e) {
-      toast("Ошибка: " + e.message, "error");
+      toast('Ошибка: ' + e.message, 'error');
     }
   },
 
   // ==================== КОПИРОВАНИЕ УСЛУГ ====================
   showCopyServicesModal() {
-    const currentSalonId = State.editingSalonId;
-    const otherSalons = State.data.salons.filter(
-      (s) => s.salon_id !== currentSalonId,
-    );
-
-    if (otherSalons.length === 0) {
-      toast("Нет других салонов для копирования", "error");
+    if (!navigator.onLine) {
+      toast('Нет интернета', 'error');
       return;
     }
-
+    
+    const currentSalonId = State.editingSalonId;
+    const otherSalons = State.data.salons.filter(s => s.salon_id !== currentSalonId);
+    
+    if (otherSalons.length === 0) {
+      toast('Нет других салонов для копирования', 'error');
+      return;
+    }
+    
     showModal(`
       <div class="modal-handle"></div>
       <div class="modal-title">Скопировать услуги из</div>
       <p class="text-small text-muted mb-16">Выберите салон-источник. Услуги скопируются с новыми ID — оригиналы не изменятся.</p>
-      ${otherSalons
-        .map(
-          (s) => `
+      ${otherSalons.map(s => `
         <div class="settings-row" onclick="App.copyServicesFrom('${s.salon_id}')">
           <div class="settings-icon"><i data-lucide="building-2"></i></div>
           <div class="settings-content">
@@ -1370,56 +1442,50 @@ const App = {
           </div>
           <i data-lucide="chevron-right" class="settings-chevron"></i>
         </div>
-      `,
-        )
-        .join("")}
+      `).join('')}
     `);
   },
-
+  
   async copyServicesFrom(sourceSalonId) {
     closeModal();
-
-    const salon = State.data.salons.find((s) => s.salon_id === sourceSalonId);
-    const sourceName = salon ? salon.name : "";
-
-    if (
-      !confirm(
-        `Скопировать все услуги из "${sourceName}" в текущий салон?\n\nЕсли в текущем салоне уже есть услуги — копирование не сработает.`,
-      )
-    )
-      return;
-
-    showLoadingModal("Копирование...");
-
+    
+    const salon = State.data.salons.find(s => s.salon_id === sourceSalonId);
+    const sourceName = salon ? salon.name : '';
+    
+    if (!confirm(`Скопировать все услуги из "${sourceName}" в текущий салон?\n\nЕсли в текущем салоне уже есть услуги — копирование не сработает.`)) return;
+    
+    showLoadingModal('Копирование...');
+    
     try {
-      const result = await apiCall("manageService", {
-        service_action: "copy_from_salon",
+      const result = await apiCall('manageService', {
+        service_action: 'copy_from_salon',
         payload: {
           from_salon_id: sourceSalonId,
-          to_salon_id: State.editingSalonId,
-        },
+          to_salon_id: State.editingSalonId
+        }
       });
-
+      
       clearServicesCache(State.editingSalonId);
+      clearServicesStorage(State.editingSalonId);
       closeModal();
-      toast(`Скопировано услуг: ${result.count || 0}`, "success");
-      App.go("salon-edit");
+      toast(`Скопировано услуг: ${result.count || 0}`, 'success');
+      App.go('salon-edit');
     } catch (e) {
       closeModal();
-      toast("Ошибка: " + e.message, "error");
+      toast('Ошибка: ' + e.message, 'error');
     }
   },
 
   // ==================== РЕДАКТИРОВАНИЕ УСЛУГ В САЛОНЕ ====================
   editSalonService(serviceId) {
     const list = State._editingSalonServices || [];
-    const service = list.find((s) => s.service_id === serviceId);
-
+    const service = list.find(s => s.service_id === serviceId);
+    
     if (!service) {
-      toast("Услуга не найдена. Обновите список.", "error");
+      toast('Услуга не найдена. Обновите список.', 'error');
       return;
     }
-
+    
     showModal(`
       <div class="modal-handle"></div>
       <div class="modal-title">Редактировать услугу</div>
@@ -1445,177 +1511,152 @@ const App = {
       </button>
     `);
   },
-
+  
   async saveSalonServiceEdit(serviceId) {
-    const name = document
-      .getElementById("edit-salon-service-name")
-      .value.trim();
-    const price =
-      parseFloat(document.getElementById("edit-salon-service-price").value) ||
-      0;
-
-    if (!name) {
-      toast("Введите название", "error");
+    if (!navigator.onLine) {
+      toast('Нет интернета. Сохраните когда появится связь.', 'error');
       return;
     }
-
-    showLoadingModal("Сохранение...");
-
+    
+    const name = document.getElementById('edit-salon-service-name').value.trim();
+    const price = parseFloat(document.getElementById('edit-salon-service-price').value) || 0;
+    
+    if (!name) {
+      toast('Введите название', 'error');
+      return;
+    }
+    
+    showLoadingModal('Сохранение...');
+    
     try {
-      await apiCall("manageService", {
-        service_action: "update",
+      await apiCall('manageService', {
+        service_action: 'update',
         payload: {
           service_id: serviceId,
           service_name: name,
-          base_price: price,
-        },
+          base_price: price
+        }
       });
-
+      
       clearServicesCache(State.editingSalonId);
+      clearServicesStorage(State.editingSalonId);
       closeModal();
-      toast("Сохранено", "success");
-      App.go("salon-edit");
+      toast('Сохранено', 'success');
+      App.go('salon-edit');
     } catch (e) {
       closeModal();
-      toast("Ошибка: " + e.message, "error");
+      toast('Ошибка: ' + e.message, 'error');
     }
   },
-
+  
   confirmDeleteSalonService(serviceId) {
-    if (
-      !confirm(
-        "Удалить услугу из каталога?\n\nВ уже сохранённых визитах она останется.",
-      )
-    )
+    if (!navigator.onLine) {
+      toast('Нет интернета', 'error');
       return;
-
-    showLoadingModal("Удаление...");
-
-    apiCall("manageService", {
-      service_action: "delete",
-      payload: { service_id: serviceId },
-    })
-      .then(() => {
-        clearServicesCache(State.editingSalonId);
-        closeModal();
-        toast("Услуга удалена", "success");
-        App.go("salon-edit");
-      })
-      .catch((e) => {
-        closeModal();
-        toast("Ошибка: " + e.message, "error");
-      });
+    }
+    
+    if (!confirm('Удалить услугу из каталога?\n\nВ уже сохранённых визитах она останется.')) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('manageService', {
+      service_action: 'delete',
+      payload: { service_id: serviceId }
+    }).then(() => {
+      clearServicesCache(State.editingSalonId);
+      clearServicesStorage(State.editingSalonId);
+      closeModal();
+      toast('Услуга удалена', 'success');
+      App.go('salon-edit');
+    }).catch(e => {
+      closeModal();
+      toast('Ошибка: ' + e.message, 'error');
+    });
   },
 
   // ==================== РЕДАКТИРОВАНИЕ ВИЗИТОВ ====================
-
+  
   showVisitDetails(visitId) {
     if (!State.fullData) {
-      toast("Данные загружаются", "error");
+      toast('Данные загружаются', 'error');
       return;
     }
 
-    const services = State.fullData.transactions.filter(
-      (t) => t.visit_id === visitId,
-    );
+    const services = State.fullData.transactions.filter(t => t.visit_id === visitId);
     if (services.length === 0) {
-      toast("Визит не найден", "error");
+      toast('Визит не найден', 'error');
       return;
     }
-
+    
     const first = services[0];
     const salonId = first.salon_id;
-    const salon = State.data.salons.find((s) => s.salon_id === salonId);
-    const salonName = salon ? salon.name : "Салон";
-
-    const totalPrice = services.reduce(
-      (sum, s) => sum + (s.final_price || s.full_price || 0),
-      0,
-    );
-    const totalEarnings = services.reduce(
-      (sum, s) => sum + s.master_earnings,
-      0,
-    );
-    const dateStr =
-      formatDateFull(first.service_date) +
-      ", " +
-      formatTime(first.service_date);
-
+    const salon = State.data.salons.find(s => s.salon_id === salonId);
+    const salonName = salon ? salon.name : 'Салон';
+    
+    const totalPrice = services.reduce((sum, s) => sum + (s.final_price || s.full_price || 0), 0);
+    const totalEarnings = services.reduce((sum, s) => sum + s.master_earnings, 0);
+    const dateStr = formatDateFull(first.service_date) + ', ' + formatTime(first.service_date);
+    
     showModal(`
-    <div class="modal-handle"></div>
-    <div class="modal-title">Визит</div>
-    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
-      <i data-lucide="building-2" style="width: 16px; height: 16px; color: var(--text-2);"></i>
-      <span style="font-size: 14px; font-weight: 500; color: var(--text-1);">${escapeHtml(salonName)}</span>
-    </div>
-    <div class="text-small text-muted mb-16">${dateStr}</div>
-    
-    <div class="section-title" style="margin: 0 0 8px;">Услуги</div>
-    ${services
-      .map(
-        (s) => `
-      <div class="service-item clickable" onclick="App.editTransaction('${s.id}')">
-        <div class="service-item-main">
-          <div class="service-name">${escapeHtml(s.service_name)}</div>
-          <div class="service-meta">
-            ${formatMoney(s.final_price || s.full_price || 0)} · ${s.discount_percent > 0 ? "скидка " + s.discount_percent + "% · " : ""}${s.master_percent}%
+      <div class="modal-handle"></div>
+      <div class="modal-title">Визит</div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 4px;">
+        <i data-lucide="building-2" style="width: 16px; height: 16px; color: var(--text-2);"></i>
+        <span style="font-size: 14px; font-weight: 500; color: var(--text-1);">${escapeHtml(salonName)}</span>
+      </div>
+      <div class="text-small text-muted mb-16">${dateStr}</div>
+      
+      <div class="section-title" style="margin: 0 0 8px;">Услуги</div>
+      ${services.map(s => `
+        <div class="service-item clickable" onclick="App.editTransaction('${s.id}')">
+          <div class="service-item-main">
+            <div class="service-name">${escapeHtml(s.service_name)}</div>
+            <div class="service-meta">
+              ${formatMoney(s.final_price || s.full_price || 0)} · ${s.discount_percent > 0 ? 'скидка ' + s.discount_percent + '% · ' : ''}${s.master_percent}%
+            </div>
           </div>
+          <div class="service-price">${formatMoney(s.master_earnings)}</div>
+          <i data-lucide="pencil" style="width: 16px; height: 16px; margin-left: 8px; color: var(--text-3);"></i>
         </div>
-        <div class="service-price">${formatMoney(s.master_earnings)}</div>
-        <i data-lucide="pencil" style="width: 16px; height: 16px; margin-left: 8px; color: var(--text-3);"></i>
+      `).join('')}
+      
+      <div class="total-block" style="margin-top: 12px;">
+        <div class="total-row">
+          <span class="total-row-label">Стоимость визита</span>
+          <span class="total-row-value">${formatMoney(totalPrice)}</span>
+        </div>
+        <div class="total-row">
+          <span class="total-row-label">Заработок мастера</span>
+          <span class="total-row-value income">${formatMoney(totalEarnings)}</span>
+        </div>
       </div>
-    `,
-      )
-      .join("")}
-    
-    <div class="total-block" style="margin-top: 12px;">
-      <div class="total-row">
-        <span class="total-row-label">Стоимость визита</span>
-        <span class="total-row-value">${formatMoney(totalPrice)}</span>
-      </div>
-      <div class="total-row">
-        <span class="total-row-label">Заработок мастера</span>
-        <span class="total-row-value income">${formatMoney(totalEarnings)}</span>
-      </div>
-    </div>
-    
-    <button class="btn btn-danger" onclick="App.confirmDeleteVisit('${visitId}')">
-      <i data-lucide="trash-2"></i>
-      <span>Удалить весь визит</span>
-    </button>
-  `);
+      
+      <button class="btn btn-danger" onclick="App.confirmDeleteVisit('${visitId}')">
+        <i data-lucide="trash-2"></i>
+        <span>Удалить весь визит</span>
+      </button>
+    `);
   },
-
+  
   editTransaction(transactionId) {
     if (!State.fullData) return;
-
-    const transaction = State.fullData.transactions.find(
-      (t) => t.id === transactionId,
-    );
+    
+    const transaction = State.fullData.transactions.find(t => t.id === transactionId);
     if (!transaction) {
-      toast("Услуга не найдена", "error");
+      toast('Услуга не найдена', 'error');
       return;
     }
-
+    
     const salonId = transaction.salon_id;
-
-    fetchServices(salonId)
-      .then((services) => {
-        const now = new Date();
-        const oneYearAgo = new Date(
-          now.getFullYear() - 1,
-          now.getMonth(),
-          now.getDate(),
-        );
-        const oneMonthAhead = new Date(
-          now.getFullYear(),
-          now.getMonth() + 1,
-          now.getDate(),
-        );
-
-        State._editingServices = services;
-
-        showModal(`
+    
+    fetchServices(salonId).then(services => {
+      const now = new Date();
+      const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+      const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+      
+      State._editingServices = services;
+      
+      showModal(`
         <div class="modal-handle"></div>
         <div class="modal-title">Редактировать услугу</div>
         
@@ -1623,22 +1664,14 @@ const App = {
           <label class="input-label">Услуга</label>
           <select id="edit-tx-service" class="select">
             <option value="">— выберите —</option>
-            ${services
-              .map(
-                (s) => `
-              <option value="${escapeHtml(s.service_name)}" ${s.service_name === transaction.service_name ? "selected" : ""}>
+            ${services.map(s => `
+              <option value="${escapeHtml(s.service_name)}" ${s.service_name === transaction.service_name ? 'selected' : ''}>
                 ${escapeHtml(s.service_name)}
               </option>
-            `,
-              )
-              .join("")}
-            ${
-              !services.find((s) => s.service_name === transaction.service_name)
-                ? `
+            `).join('')}
+            ${!services.find(s => s.service_name === transaction.service_name) ? `
               <option value="${escapeHtml(transaction.service_name)}" selected>${escapeHtml(transaction.service_name)} (старая)</option>
-            `
-                : ""
-            }
+            ` : ''}
           </select>
         </div>
         
@@ -1675,77 +1708,72 @@ const App = {
           <span>Удалить услугу</span>
         </button>
       `);
-
-        const select = document.getElementById("edit-tx-service");
-        if (select) {
-          select.addEventListener("change", (e) => {
-            const selected = services.find(
-              (s) => s.service_name === e.target.value,
-            );
-            if (selected) {
-              document.getElementById("edit-tx-price").value =
-                selected.base_price;
-            }
-          });
-        }
-      })
-      .catch(() => {
-        toast("Ошибка загрузки каталога", "error");
-      });
+      
+      const select = document.getElementById('edit-tx-service');
+      if (select) {
+        select.addEventListener('change', e => {
+          const selected = services.find(s => s.service_name === e.target.value);
+          if (selected) {
+            document.getElementById('edit-tx-price').value = selected.base_price;
+          }
+        });
+      }
+    }).catch(e => {
+      const isOffline = !navigator.onLine;
+      if (isOffline) {
+        toast('Нет интернета. Каталог услуг не кэширован.', 'error');
+      } else {
+        toast('Ошибка загрузки каталога', 'error');
+      }
+    });
   },
-
+  
   async saveTransactionEdit(transactionId) {
-    const serviceName = document.getElementById("edit-tx-service").value;
-    const fullPrice =
-      parseFloat(document.getElementById("edit-tx-price").value) || 0;
-    const discountPercent =
-      parseFloat(document.getElementById("edit-tx-discount").value) || 0;
-    const masterPercent =
-      parseFloat(document.getElementById("edit-tx-percent").value) || 50;
-    const dateInput = document.getElementById("edit-tx-date").value;
-
+    if (!navigator.onLine) {
+      toast('Нет интернета. Сохраните когда появится связь.', 'error');
+      return;
+    }
+    
+    const serviceName = document.getElementById('edit-tx-service').value;
+    const fullPrice = parseFloat(document.getElementById('edit-tx-price').value) || 0;
+    const discountPercent = parseFloat(document.getElementById('edit-tx-discount').value) || 0;
+    const masterPercent = parseFloat(document.getElementById('edit-tx-percent').value) || 50;
+    const dateInput = document.getElementById('edit-tx-date').value;
+    
     if (!serviceName) {
-      toast("Выберите услугу", "error");
+      toast('Выберите услугу', 'error');
       return;
     }
-
+    
     if (!dateInput) {
-      toast("Введите дату", "error");
+      toast('Введите дату', 'error');
       return;
     }
-
+    
     const parsedDate = new Date(dateInput);
     const now = new Date();
-    const oneYearAgo = new Date(
-      now.getFullYear() - 1,
-      now.getMonth(),
-      now.getDate(),
-    );
-    const oneMonthAhead = new Date(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      now.getDate(),
-    );
-
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
     if (isNaN(parsedDate.getTime())) {
-      toast("Некорректная дата", "error");
+      toast('Некорректная дата', 'error');
       return;
     }
     if (parsedDate < oneYearAgo) {
-      toast("Дата слишком давняя", "error");
+      toast('Дата слишком давняя', 'error');
       return;
     }
     if (parsedDate > oneMonthAhead) {
-      toast("Дата слишком далеко в будущем", "error");
+      toast('Дата слишком далеко в будущем', 'error');
       return;
     }
-
+    
     const serviceDate = parsedDate.toISOString();
-
-    showLoadingModal("Сохранение...");
-
+    
+    showLoadingModal('Сохранение...');
+    
     try {
-      await apiCall("updateTransaction", {
+      await apiCall('updateTransaction', {
         payload: {
           transaction_id: transactionId,
           updates: {
@@ -1753,14 +1781,12 @@ const App = {
             full_price: fullPrice,
             discount_percent: discountPercent,
             master_percent: masterPercent,
-            service_date: serviceDate,
-          },
-        },
+            service_date: serviceDate
+          }
+        }
       });
-
-      const tx = State.fullData.transactions.find(
-        (t) => t.id === transactionId,
-      );
+      
+      const tx = State.fullData.transactions.find(t => t.id === transactionId);
       if (tx) {
         tx.service_name = serviceName;
         tx.full_price = fullPrice;
@@ -1771,262 +1797,245 @@ const App = {
         tx.master_earnings = tx.final_price * (masterPercent / 100);
         tx.service_date = serviceDate;
       }
-
+      
       Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
-
+      
       closeModal();
-      toast("Сохранено", "success");
-
+      toast('Сохранено', 'success');
+      
       syncData(true);
       syncFullData(true);
-
-      if (State.currentScreen === "journal") renderJournalList();
-      if (State.currentScreen === "reports") renderReportsContent();
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
     } catch (e) {
-      toast("Ошибка: " + e.message, "error");
+      toast('Ошибка: ' + e.message, 'error');
       closeModal();
     }
   },
-
+  
   confirmDeleteTransaction(transactionId) {
-    if (!confirm("Удалить эту услугу? Действие необратимо.")) return;
-
-    showLoadingModal("Удаление...");
-
-    apiCall("deleteTransaction", {
-      payload: { transaction_id: transactionId },
-    })
-      .then(() => {
-        State.fullData.transactions = State.fullData.transactions.filter(
-          (t) => t.id !== transactionId,
-        );
-        Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
-
-        closeModal();
-        toast("Услуга удалена", "success");
-
-        syncData(true);
-        syncFullData(true);
-
-        if (State.currentScreen === "journal") renderJournalList();
-        if (State.currentScreen === "reports") renderReportsContent();
-      })
-      .catch((e) => {
-        toast("Ошибка: " + e.message, "error");
-        closeModal();
-      });
+    if (!navigator.onLine) {
+      toast('Нет интернета', 'error');
+      return;
+    }
+    
+    if (!confirm('Удалить эту услугу? Действие необратимо.')) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('deleteTransaction', {
+      payload: { transaction_id: transactionId }
+    }).then(() => {
+      State.fullData.transactions = State.fullData.transactions.filter(t => t.id !== transactionId);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
+      
+      closeModal();
+      toast('Услуга удалена', 'success');
+      
+      syncData(true);
+      syncFullData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
+    }).catch(e => {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    });
   },
-
+  
   confirmDeleteVisit(visitId) {
     if (!State.fullData) return;
 
-    const count = State.fullData.transactions.filter(
-      (t) => t.visit_id === visitId,
-    ).length;
-    if (!confirm(`Удалить весь визит (${count} услуг)? Действие необратимо.`))
-      return;
-
-    showLoadingModal("Удаление...");
-
-    apiCall("deleteVisit", {
-      payload: { visit_id: visitId },
-    })
-      .then(() => {
-        State.fullData.transactions = State.fullData.transactions.filter(
-          (t) => t.visit_id !== visitId,
-        );
-        Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
-
-        closeModal();
-        toast("Визит удалён", "success");
-
-        syncData(true);
-        syncFullData(true);
-
-        if (State.currentScreen === "journal") renderJournalList();
-        if (State.currentScreen === "reports") renderReportsContent();
-      })
-      .catch((e) => {
-        toast("Ошибка: " + e.message, "error");
-        closeModal();
-      });
+    const count = State.fullData.transactions.filter(t => t.visit_id === visitId).length;
+    if (!confirm(`Удалить весь визит (${count} услуг)? Действие необратимо.`)) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('deleteVisit', {
+      payload: { visit_id: visitId }
+    }).then(() => {
+      State.fullData.transactions = State.fullData.transactions.filter(t => t.visit_id !== visitId);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
+      
+      closeModal();
+      toast('Визит удалён', 'success');
+      
+      syncData(true);
+      syncFullData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
+    }).catch(e => {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    });
   },
-
+  
   editPayout(payoutId) {
     if (!State.fullData) return;
 
-    const payout = State.fullData.payouts.find((p) => p.id === payoutId);
+    const payout = State.fullData.payouts.find(p => p.id === payoutId);
     if (!payout) {
-      toast("Выплата не найдена", "error");
+      toast('Выплата не найдена', 'error');
       return;
     }
-
+    
     const salonId = payout.salon_id;
-    const salon = State.data.salons.find((s) => s.salon_id === salonId);
-    const salonName = salon ? salon.name : "Салон";
-
+    const salon = State.data.salons.find(s => s.salon_id === salonId);
+    const salonName = salon ? salon.name : 'Салон';
+    
     const now = new Date();
-    const oneYearAgo = new Date(
-      now.getFullYear() - 1,
-      now.getMonth(),
-      now.getDate(),
-    );
-    const oneMonthAhead = new Date(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      now.getDate(),
-    );
-
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
     showModal(`
-    <div class="modal-handle"></div>
-    <div class="modal-title">Редактировать выплату</div>
-    <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
-      <i data-lucide="building-2" style="width: 16px; height: 16px; color: var(--text-2);"></i>
-      <span style="font-size: 14px; font-weight: 500; color: var(--text-1);">${escapeHtml(salonName)}</span>
-    </div>
-    
-    <div class="input-group">
-      <label class="input-label">Сумма (₽)</label>
-      <input type="number" id="edit-payout-amount" class="input" value="${payout.amount || 0}">
-    </div>
-    
-    <div class="input-group">
-      <label class="input-label">Комментарий</label>
-      <input type="text" id="edit-payout-comment" class="input" value="${escapeHtml(payout.comment || "")}" placeholder="наличными">
-    </div>
-    
-    <div class="input-group">
-      <label class="input-label">Дата</label>
-      <input type="datetime-local" id="edit-payout-date" class="input" 
-             value="${formatDateTimeLocal(payout.date)}"
-             min="${formatDateTimeLocal(oneYearAgo)}"
-             max="${formatDateTimeLocal(oneMonthAhead)}">
-    </div>
-    
-    <button class="btn btn-primary" onclick="App.savePayoutEdit('${payoutId}')">
-      <i data-lucide="check"></i>
-      <span>Сохранить</span>
-    </button>
-    
-    <button class="btn btn-danger" onclick="App.confirmDeletePayout('${payoutId}')">
-      <i data-lucide="trash-2"></i>
-      <span>Удалить выплату</span>
-    </button>
-  `);
+      <div class="modal-handle"></div>
+      <div class="modal-title">Редактировать выплату</div>
+      <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 16px;">
+        <i data-lucide="building-2" style="width: 16px; height: 16px; color: var(--text-2);"></i>
+        <span style="font-size: 14px; font-weight: 500; color: var(--text-1);">${escapeHtml(salonName)}</span>
+      </div>
+      
+      <div class="input-group">
+        <label class="input-label">Сумма (₽)</label>
+        <input type="number" id="edit-payout-amount" class="input" value="${payout.amount || 0}">
+      </div>
+      
+      <div class="input-group">
+        <label class="input-label">Комментарий</label>
+        <input type="text" id="edit-payout-comment" class="input" value="${escapeHtml(payout.comment || '')}" placeholder="наличными">
+      </div>
+      
+      <div class="input-group">
+        <label class="input-label">Дата</label>
+        <input type="datetime-local" id="edit-payout-date" class="input" 
+               value="${formatDateTimeLocal(payout.date)}"
+               min="${formatDateTimeLocal(oneYearAgo)}"
+               max="${formatDateTimeLocal(oneMonthAhead)}">
+      </div>
+      
+      <button class="btn btn-primary" onclick="App.savePayoutEdit('${payoutId}')">
+        <i data-lucide="check"></i>
+        <span>Сохранить</span>
+      </button>
+      
+      <button class="btn btn-danger" onclick="App.confirmDeletePayout('${payoutId}')">
+        <i data-lucide="trash-2"></i>
+        <span>Удалить выплату</span>
+      </button>
+    `);
   },
-
+  
   async savePayoutEdit(payoutId) {
-    const amount =
-      parseFloat(document.getElementById("edit-payout-amount").value) || 0;
-    const comment = document.getElementById("edit-payout-comment").value.trim();
-    const dateInput = document.getElementById("edit-payout-date").value;
-
+    if (!navigator.onLine) {
+      toast('Нет интернета. Сохраните когда появится связь.', 'error');
+      return;
+    }
+    
+    const amount = parseFloat(document.getElementById('edit-payout-amount').value) || 0;
+    const comment = document.getElementById('edit-payout-comment').value.trim();
+    const dateInput = document.getElementById('edit-payout-date').value;
+    
     if (amount <= 0) {
-      toast("Введите сумму", "error");
+      toast('Введите сумму', 'error');
       return;
     }
-
+    
     if (!dateInput) {
-      toast("Введите дату", "error");
+      toast('Введите дату', 'error');
       return;
     }
-
+    
     const parsedDate = new Date(dateInput);
     const now = new Date();
-    const oneYearAgo = new Date(
-      now.getFullYear() - 1,
-      now.getMonth(),
-      now.getDate(),
-    );
-    const oneMonthAhead = new Date(
-      now.getFullYear(),
-      now.getMonth() + 1,
-      now.getDate(),
-    );
-
+    const oneYearAgo = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+    const oneMonthAhead = new Date(now.getFullYear(), now.getMonth() + 1, now.getDate());
+    
     if (isNaN(parsedDate.getTime())) {
-      toast("Некорректная дата", "error");
+      toast('Некорректная дата', 'error');
       return;
     }
     if (parsedDate < oneYearAgo) {
-      toast("Дата слишком давняя", "error");
+      toast('Дата слишком давняя', 'error');
       return;
     }
     if (parsedDate > oneMonthAhead) {
-      toast("Дата слишком далеко в будущем", "error");
+      toast('Дата слишком далеко в будущем', 'error');
       return;
     }
-
+    
     const date = parsedDate.toISOString();
-
-    showLoadingModal("Сохранение...");
-
+    
+    showLoadingModal('Сохранение...');
+    
     try {
-      await apiCall("updatePayout", {
+      await apiCall('updatePayout', {
         payload: {
           payout_id: payoutId,
-          updates: { amount, comment, date },
-        },
+          updates: { amount, comment, date }
+        }
       });
-
-      const p = State.fullData.payouts.find((x) => x.id === payoutId);
+      
+      const p = State.fullData.payouts.find(x => x.id === payoutId);
       if (p) {
         p.amount = amount;
         p.comment = comment;
         p.date = date;
       }
-
+      
       Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
-
+      
       closeModal();
-      toast("Сохранено", "success");
-
+      toast('Сохранено', 'success');
+      
       syncData(true);
       syncFullData(true);
-
-      if (State.currentScreen === "journal") renderJournalList();
-      if (State.currentScreen === "reports") renderReportsContent();
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
     } catch (e) {
-      toast("Ошибка: " + e.message, "error");
+      toast('Ошибка: ' + e.message, 'error');
       closeModal();
     }
   },
-
+  
   confirmDeletePayout(payoutId) {
-    if (!confirm("Удалить эту выплату? Действие необратимо.")) return;
-
-    showLoadingModal("Удаление...");
-
-    apiCall("deletePayout", {
-      payload: { payout_id: payoutId },
-    })
-      .then(() => {
-        State.fullData.payouts = State.fullData.payouts.filter(
-          (p) => p.id !== payoutId,
-        );
-        Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
-
-        closeModal();
-        toast("Выплата удалена", "success");
-
-        syncData(true);
-        syncFullData(true);
-
-        if (State.currentScreen === "journal") renderJournalList();
-        if (State.currentScreen === "reports") renderReportsContent();
-      })
-      .catch((e) => {
-        toast("Ошибка: " + e.message, "error");
-        closeModal();
-      });
+    if (!navigator.onLine) {
+      toast('Нет интернета', 'error');
+      return;
+    }
+    
+    if (!confirm('Удалить эту выплату? Действие необратимо.')) return;
+    
+    showLoadingModal('Удаление...');
+    
+    apiCall('deletePayout', {
+      payload: { payout_id: payoutId }
+    }).then(() => {
+      State.fullData.payouts = State.fullData.payouts.filter(p => p.id !== payoutId);
+      Storage.set(STORAGE_KEYS.DATA_FULL, State.fullData);
+      
+      closeModal();
+      toast('Выплата удалена', 'success');
+      
+      syncData(true);
+      syncFullData(true);
+      
+      if (State.currentScreen === 'journal') renderJournalList();
+      if (State.currentScreen === 'reports') renderReportsContent();
+    }).catch(e => {
+      toast('Ошибка: ' + e.message, 'error');
+      closeModal();
+    });
   },
 
   closeModal() {
-    const modal = document.getElementById("modal");
-    const backdrop = document.getElementById("modal-backdrop");
-    if (modal) modal.classList.remove("show");
-    if (backdrop) backdrop.classList.remove("show");
-  },
+    const modal = document.getElementById('modal');
+    const backdrop = document.getElementById('modal-backdrop');
+    if (modal) modal.classList.remove('show');
+    if (backdrop) backdrop.classList.remove('show');
+  }
 };
 
 // ==================== ПОКАЗ ЭКРАНА ====================
@@ -2682,7 +2691,6 @@ function renderSalonEdit() {
       if (State._renderSalonToken !== currentToken) return;
       if (State.editingSalonId !== salon.salon_id) return;
       
-      // Сохраняем для редактирования
       State._editingSalonServices = services;
       
       if (services && services.length > 0) {
@@ -2707,11 +2715,15 @@ function renderSalonEdit() {
       if (State._renderSalonToken !== currentToken) return;
       if (State.editingSalonId !== salon.salon_id) return;
       
+      const isOffline = !navigator.onLine;
+      const hasCache = getServicesFromStorage(salon.salon_id) !== null;
+      
       console.error('Load services error:', e);
       servicesEl.innerHTML = `
         <div class="empty-state">
           <i data-lucide="alert-circle"></i>
-          <div class="empty-state-text">Не удалось загрузить услуги</div>
+          <div class="empty-state-text">${isOffline && !hasCache ? 'Нет интернета' : 'Не удалось загрузить услуги'}</div>
+          ${isOffline && !hasCache ? '<p class="text-small text-muted mt-16">Каталог услуг не сохранён локально</p>' : ''}
           <button class="btn btn-secondary mt-16" onclick="renderSalonEdit()">
             <i data-lucide="refresh-cw"></i>
             <span>Повторить</span>
@@ -2852,10 +2864,25 @@ function renderServicePicker(mode) {
   fetchServices(salonId).then(services => {
     renderServicePickerList(services);
   }).catch(e => {
+    const isOffline = !navigator.onLine;
+    const hasCache = getServicesFromStorage(salonId) !== null;
+    
+    let message = 'Ошибка загрузки';
+    let hint = '';
+    
+    if (isOffline && !hasCache) {
+      message = 'Нет интернета';
+      hint = 'Услуги не сохранены локально. Подключитесь к сети один раз, чтобы кэшировать каталог.';
+    } else if (isOffline) {
+      message = 'Нет интернета';
+      hint = 'Не удалось получить данные. Повторите попытку.';
+    }
+    
     listEl.innerHTML = `
       <div class="empty-state">
         <i data-lucide="alert-circle"></i>
-        <div class="empty-state-text">Ошибка загрузки</div>
+        <div class="empty-state-text">${message}</div>
+        ${hint ? `<p class="text-small text-muted mt-16">${hint}</p>` : ''}
         <button class="btn btn-secondary mt-16" onclick="renderServicePicker('${mode}')">
           <i data-lucide="refresh-cw"></i>
           <span>Повторить</span>
@@ -2882,7 +2909,6 @@ function renderServicePickerList(services) {
     return;
   }
   
-  // Сохраняем список для доступа по id
   State._servicePickerList = services;
   
   listEl.innerHTML = services.map(s => `
@@ -2946,6 +2972,11 @@ async function handleAuth() {
     return;
   }
 
+  if (!navigator.onLine) {
+    toast('Нет интернета. Подключитесь для первого входа.', 'error');
+    return;
+  }
+
   btn.disabled = true;
   btn.innerHTML = '<div class="spinner-btn"></div><span>Подключение...</span>';
 
@@ -2970,6 +3001,9 @@ async function handleAuth() {
     Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
 
     App.go('home');
+    
+    // Синхронизируем услуги в фоне
+    syncAllServicesToCache();
   } catch (e) {
     console.error('Auth error:', e);
     toast('Неверный токен или ошибка связи', 'error');
@@ -3022,6 +3056,11 @@ async function init() {
     if (ok && State.currentScreen === 'home') {
       renderHome();
     }
+    
+    // Синхронизируем каталог услуг в фоне
+    if (ok) {
+      syncAllServicesToCache();
+    }
   }, 50);
 
   if (autoSyncInterval) clearInterval(autoSyncInterval);
@@ -3039,6 +3078,7 @@ async function init() {
     await flushPending();
     await syncData(true);
     await syncFullData(true);
+    await syncAllServicesToCache();
   });
   window.addEventListener('offline', () => setNetwork('offline'));
 }
