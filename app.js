@@ -614,6 +614,12 @@ async function syncData(silent = false) {
   setNetwork('syncing');
 
   try {
+    // Запоминаем старые значения для сравнения
+    const oldTotalDebt = State.data.totalDebt;
+    const oldSalonsDebt = JSON.stringify(
+      (State.data.salons || []).map(s => ({ id: s.salon_id, debt: s.debt }))
+    );
+
     const quick = await apiCall('getQuickData');
 
     if (quick.success) {
@@ -624,6 +630,19 @@ async function syncData(silent = false) {
 
       Storage.set(STORAGE_KEYS.DATA, State.data);
       Storage.set(STORAGE_KEYS.LAST_SYNC, Date.now());
+
+      // Проверяем, изменились ли данные
+      const newSalonsDebt = JSON.stringify(
+        (State.data.salons || []).map(s => ({ id: s.salon_id, debt: s.debt }))
+      );
+      const dataChanged = 
+        oldTotalDebt !== State.data.totalDebt || 
+        oldSalonsDebt !== newSalonsDebt;
+
+      // Если на главном и данные изменились — перерисовываем
+      if (dataChanged && State.currentScreen === 'home') {
+        renderHome();
+      }
     }
 
     setNetwork('online');
@@ -894,8 +913,18 @@ const App = {
       status: 'pending'
     };
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
+   
+    // Оптимистично обновляем долги
+    State.data.totalDebt = (State.data.totalDebt || 0) + totalEarnings;
+    State.data.salons = State.data.salons.map(s => {
+      if (s.salon_id === salonId) {
+        return { ...s, debt: (s.debt || 0) + totalEarnings };
+      }
+      return s;
+    });
+   
     Storage.set(STORAGE_KEYS.DATA, State.data);
-
+   
     App.go('home');
 
     addPending({
@@ -992,8 +1021,18 @@ const App = {
       status: 'pending'
     };
     State.data.recentOps = [optimistic, ...State.data.recentOps].slice(0, 20);
+   
+    // Оптимистично уменьшаем долг
+    State.data.totalDebt = (State.data.totalDebt || 0) - amount;
+    State.data.salons = State.data.salons.map(s => {
+      if (s.salon_id === salonId) {
+        return { ...s, debt: (s.debt || 0) - amount };
+      }
+      return s;
+    });
+   
     Storage.set(STORAGE_KEYS.DATA, State.data);
-
+   
     App.go('home');
 
     addPending({
