@@ -927,9 +927,11 @@ const App = {
   async saveVisit() {
     const btn = document.getElementById('btn-save-visit');
     const salonId = State.currentSalonId;
+    const salon = App.getCurrentSalon();
 
-    if (!salonId) {
-      toast('Выберите салон', 'error');
+    if (!salonId || !salon) {
+      toast('Салон не выбран. Выберите салон.', 'error');
+      App.go('home');
       return;
     }
     if (State.draftVisit.services.length === 0) {
@@ -1070,12 +1072,14 @@ const App = {
 
   async savePayout() {
     const salonId = State.currentSalonId;
+    const salon = App.getCurrentSalon();
     const amountInput = document.getElementById('payout-amount');
     const commentInput = document.getElementById('payout-comment');
 
     const amount = parseMoney(amountInput.value);
-    if (!salonId) {
-      toast('Выберите салон', 'error');
+    if (!salonId || !salon) {
+      toast('Салон не выбран. Выберите салон.', 'error');
+      App.go('home');
       return;
     }
     if (amount <= 0) {
@@ -1334,6 +1338,18 @@ const App = {
     
     const salon = State.data.salons.find(s => s.salon_id === State.editingSalonId);
     const salonName = salon ? salon.name : '';
+    const deletedSalonId = State.editingSalonId;
+    const salonDebt = salon ? (salon.debt || 0) : 0;
+    
+    // Если у салона есть долг — предупреждаем и не даём удалить
+    if (Math.abs(salonDebt) > 1) {
+      if (salonDebt > 0) {
+        toast(`Нельзя удалить. Салон должен вам ${formatMoney(salonDebt)}. Сначала закройте долг.`, 'error');
+      } else {
+        toast(`Нельзя удалить. Вы переполучили от салона на ${formatMoney(Math.abs(salonDebt))}.`, 'error');
+      }
+      return;
+    }
     
     if (!confirm(`Удалить салон "${salonName}"?\n\nВизиты и выплаты этого салона ОСТАНУТСЯ в таблице, но будут скрыты из интерфейса.\n\nУслуги салона будут скрыты из каталога.\n\nОтменить это действие нельзя.`)) return;
 
@@ -1342,11 +1358,25 @@ const App = {
     try {
       const result = await apiCall('manageSalon', {
         salon_action: 'delete',
-        payload: { salon_id: State.editingSalonId }
+        payload: { salon_id: deletedSalonId }
       });
-      clearServicesCache(State.editingSalonId);
-      clearServicesStorage(State.editingSalonId);
+      
+      clearServicesCache(deletedSalonId);
+      clearServicesStorage(deletedSalonId);
+      
       await syncData();
+      
+      // КРИТИЧНО: если удалили текущий выбранный салон — переключаемся на первый доступный
+      if (State.currentSalonId === deletedSalonId) {
+        if (State.data.salons && State.data.salons.length > 0) {
+          State.currentSalonId = State.data.salons[0].salon_id;
+          Storage.set(STORAGE_KEYS.SALON, State.currentSalonId);
+        } else {
+          State.currentSalonId = '';
+          Storage.remove(STORAGE_KEYS.SALON);
+        }
+      }
+      
       closeModal();
       toast(result.message || 'Салон удалён', 'success');
       App.go('salons');
@@ -3037,10 +3067,15 @@ async function init() {
     State.fullData = cachedFull;
     State.fullDataLoadedAt = Storage.get(STORAGE_KEYS.LAST_FULL_SYNC, 0);
   }
-  if (cachedSalon) {
+  // Проверяем, что сохранённый салон всё ещё существует
+  if (cachedSalon && State.data.salons && State.data.salons.some(s => s.salon_id === cachedSalon)) {
     State.currentSalonId = cachedSalon;
   } else if (State.data.salons && State.data.salons.length > 0) {
     State.currentSalonId = State.data.salons[0].salon_id;
+    Storage.set(STORAGE_KEYS.SALON, State.currentSalonId);
+  } else {
+    State.currentSalonId = '';
+    Storage.remove(STORAGE_KEYS.SALON);
   }
 
   if (cachedData && cachedData.salons && cachedData.salons.length > 0) {
