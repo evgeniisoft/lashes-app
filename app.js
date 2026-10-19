@@ -2623,7 +2623,11 @@ function renderReportsContent() {
     if (bySalonTitle) bySalonTitle.style.display = 'none';
     if (bySalonEl) bySalonEl.innerHTML = '';
   }
-
+  // Активность по дням недели
+  const weekdaysEl = document.getElementById('reports-weekdays');
+  if (weekdaysEl) {
+    renderWeekdayStats(weekdaysEl, transactions, range);
+  }
   const topEl = document.getElementById('reports-top-services');
   if (topEl) {
     const counts = {};
@@ -2644,7 +2648,102 @@ function renderReportsContent() {
     }
   }
 }
-
+// ==================== АКТИВНОСТЬ ПО ДНЯМ НЕДЕЛИ ====================
+function renderWeekdayStats(container, transactions, range) {
+  const dayNames = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  const dayNamesFull = ['Понедельник', 'Вторник', 'Среда', 'Четверг', 'Пятница', 'Суббота', 'Воскресенье'];
+  
+  // Считаем по дням недели
+  const dayStats = [0, 1, 2, 3, 4, 5, 6].map(i => ({
+    index: i,
+    name: dayNames[i],
+    nameFull: dayNamesFull[i],
+    visits: new Set(),
+    count: 0,
+    earnings: 0
+  }));
+  
+  transactions.forEach(t => {
+    const date = new Date(t.service_date || t.created_at);
+    if (isNaN(date)) return;
+    
+    // getDay(): 0=вс, 1=пн, ..., 6=сб
+    // Переводим в 0=пн, 1=вт, ..., 6=вс
+    let idx = date.getDay() - 1;
+    if (idx < 0) idx = 6;
+    
+    dayStats[idx].visits.add(t.visit_id || t.id);
+    dayStats[idx].count++;
+    dayStats[idx].earnings += t.master_earnings || 0;
+  });
+  
+  // Преобразуем Set в количество
+  const stats = dayStats.map(d => ({
+    ...d,
+    visitsCount: d.visits.size
+  }));
+  
+  // Находим максимум для шкалы
+  const maxEarnings = Math.max(...stats.map(s => s.earnings), 1);
+  
+  // Находим самый активный и самый тихий
+  const activeDays = stats.filter(s => s.visitsCount > 0);
+  
+  let mostActive = null;
+  let leastActive = null;
+  
+  if (activeDays.length > 0) {
+    mostActive = activeDays.reduce((a, b) => a.earnings > b.earnings ? a : b);
+    leastActive = activeDays.reduce((a, b) => a.earnings < b.earnings ? a : b);
+  }
+  
+  // Если нет данных — заглушка
+  if (activeDays.length === 0) {
+    container.innerHTML = '<div class="text-center text-muted text-small" style="padding: 20px;">Нет данных за период</div>';
+    return;
+  }
+  
+  // Формируем HTML
+  const rowsHtml = stats.map(s => {
+    const barWidth = s.earnings > 0 ? Math.max(2, (s.earnings / maxEarnings) * 100) : 0;
+    const isMostActive = mostActive && s.index === mostActive.index;
+    const hasData = s.visitsCount > 0;
+    
+    return `
+      <div style="display: flex; align-items: center; gap: 10px; padding: 8px 0; ${!hasData ? 'opacity: 0.4;' : ''}">
+        <div style="width: 32px; font-size: 13px; font-weight: ${isMostActive ? '700' : '500'}; color: ${isMostActive ? 'var(--primary)' : 'var(--text-2)'};">
+          ${s.name}
+        </div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px;">
+            <span style="font-size: 12px; color: var(--text-2);">
+              ${s.visitsCount} ${s.visitsCount === 1 ? 'визит' : (s.visitsCount >= 2 && s.visitsCount <= 4 ? 'визита' : 'визитов')}
+            </span>
+            <span style="font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; color: ${isMostActive ? 'var(--success)' : 'var(--text-1)'};">
+              ${formatMoney(s.earnings)}
+            </span>
+          </div>
+          <div style="height: 6px; background: var(--bg); border-radius: 3px; overflow: hidden;">
+            <div style="height: 100%; width: ${barWidth}%; background: ${isMostActive ? 'var(--success)' : 'var(--primary)'}; border-radius: 3px; transition: width 0.3s;"></div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+  
+  // Подсказка внизу
+  let hintHtml = '';
+  if (mostActive && leastActive && mostActive.index !== leastActive.index) {
+    hintHtml = `
+      <div style="margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 13px; color: var(--text-2); line-height: 1.5;">
+        <div>Активнее всего: <strong style="color: var(--text-1);">${mostActive.nameFull}</strong> (${mostActive.visitsCount} ${mostActive.visitsCount === 1 ? 'визит' : 'визита'})</div>
+        ${leastActive.visitsCount > 0 ? `<div style="margin-top: 4px;">Тише всего: <strong style="color: var(--text-1);">${leastActive.nameFull}</strong> (${leastActive.visitsCount} ${leastActive.visitsCount === 1 ? 'визит' : 'визита'})</div>` : ''}
+      </div>
+    `;
+  }
+  
+  container.innerHTML = rowsHtml + hintHtml;
+}
 // ==================== РЕНДЕР: НАСТРОЙКИ ====================
 function renderSettings() {
   const nameEl = document.getElementById('settings-name');
